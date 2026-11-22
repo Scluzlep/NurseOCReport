@@ -1,0 +1,252 @@
+name: Release NurseOCReport
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nurseocreport-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      version_code: ${{ steps.meta.outputs.version_code }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check repository privacy and policy
+        run: python3 scripts/check_privacy.py
+
+      - name: Resolve version metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          VERSION="${TAG#v}"
+          BASE="${VERSION%%-*}"
+          IFS='.' read -r MAJ MIN PAT _ <<< "$BASE"
+          MAJ="${MAJ//[^0-9]/}"; MIN="${MIN//[^0-9]/}"; PAT="${PAT//[^0-9]/}"
+          MAJ="${MAJ:-0}"; MIN="${MIN:-0}"; PAT="${PAT:-0}"
+          VCODE=$((10#$MAJ * 10000 + 10#$MIN * 100 + 10#$PAT))
+          if (( VCODE <= 0 )); then
+            VCODE="${GITHUB_RUN_NUMBER}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${VCODE}" >> "$GITHUB_OUTPUT"
+
+  build-android:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+      SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+      SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+      SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate signing secrets before downloading tools
+        shell: bash
+        run: |
+          test -n "$SIGNING_KEYSTORE_BASE64" || { echo "::error::Set secret SIGNING_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SIGNING_PASSWORD" || { echo "::error::Set secret SIGNING_PASSWORD"; exit 1; }
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Ensure required Android SDK, NDK, and CMake packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
+
+      - name: Fetch C++ dependencies and stage Android OCR model assets
+        run: python3 scripts/fetch_deps.py --copy-android-assets
+
+      - name: Build unsigned release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon \
+            -PversionCode="${{ needs.prepare.outputs.version_code }}" \
+            -PversionName="${{ needs.prepare.outputs.version }}"
+
+      - name: Zipalign, sign with PKCS12 keystore, and verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          test -n "$BUILD_TOOLS"
+          UNSIGNED_APK="$(find android/app/build/outputs/apk/release -maxdepth 2 -name "*.apk" | head -n 1)"
+          test -f "$UNSIGNED_APK"
+          mkdir -p out work
+
+          APK_NAME="NurseOCReport-${{ needs.prepare.outputs.tag }}-android.apk"
+          printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.p12"
+          "$BUILD_TOOLS/zipalign" -f -p 4 "$UNSIGNED_APK" work/aligned.apk
+
+          EFFECTIVE_KEY_PASSWORD="${SIGNING_KEY_PASSWORD:-$SIGNING_PASSWORD}"
+          export EFFECTIVE_KEY_PASSWORD
+          ALIAS_ARGS=()
+          if [[ -n "${SIGNING_KEY_ALIAS:-}" ]]; then
+            ALIAS_ARGS+=(--ks-key-alias "$SIGNING_KEY_ALIAS")
+          fi
+
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$RUNNER_TEMP/release.p12" --ks-type PKCS12 \
+            "${ALIAS_ARGS[@]}" \
+            --ks-pass env:SIGNING_PASSWORD \
+            --key-pass env:EFFECTIVE_KEY_PASSWORD \
+            --out "out/$APK_NAME" work/aligned.apk
+
+          rm -f "$RUNNER_TEMP/release.p12"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "out/$APK_NAME"
+
+          BADGING_BIN="$BUILD_TOOLS/aapt"
+          if [[ ! -x "$BADGING_BIN" ]]; then
+            BADGING_BIN="$BUILD_TOOLS/aapt2"
+          fi
+          "$BADGING_BIN" dump badging "out/$APK_NAME" | tee work/badging.txt
+          grep -q "package: name='com.scluzlep.nurseocreport'" work/badging.txt
+          grep -q "launchable-activity:" work/badging.txt
+
+      - name: Upload signed Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: out/NurseOCReport-*-android.apk
+          retention-days: 1
+
+  build-windows:
+    needs: prepare
+    runs-on: windows-2022
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, x86]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+
+      - name: Fetch third-party sources, YY-Thunks, and OCR models
+        run: python scripts/fetch_deps.py
+
+      - name: Configure, build, and test Win7+ binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            $vsNinja = Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($vsNinja) {
+              $env:PATH = "$($vsNinja.DirectoryName);$env:PATH"
+            } else {
+              choco install -y ninja
+            }
+          }
+          $arch = "${{ matrix.arch }}"
+          $bdir = "build-$arch"
+          cmake -S . -B $bdir -G Ninja -DCMAKE_BUILD_TYPE=Release -DNURSEOCR_USE_YY_THUNKS=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build $bdir -j
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ".\$bdir\core_tests.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/verify_win7_pe.py "$bdir/windows/NurseOCReport.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stage portable bundle and package zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $arch = "${{ matrix.arch }}"
+          $tag = "${{ needs.prepare.outputs.tag }}"
+          $pkgName = "NurseOCReport-win7-$arch"
+          $stageRoot = "dist/$pkgName"
+          New-Item -ItemType Directory -Force -Path "$stageRoot/models" | Out-Null
+          Copy-Item "build-$arch/windows/NurseOCReport.exe" "$stageRoot/NurseOCReport.exe" -Force
+          Copy-Item "models/PP_OCRv5_mobile_det.ncnn.param" "$stageRoot/models/" -Force
+          Copy-Item "models/PP_OCRv5_mobile_det.ncnn.bin" "$stageRoot/models/" -Force
+          Copy-Item "models/PP_OCRv5_mobile_rec.ncnn.param" "$stageRoot/models/" -Force
+          Copy-Item "models/PP_OCRv5_mobile_rec.ncnn.bin" "$stageRoot/models/" -Force
+
+          & ".\$stageRoot\NurseOCReport.exe" --self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          New-Item -ItemType Directory -Force -Path "out" | Out-Null
+          $zipPath = "out/NurseOCReport-$tag-win7-$arch.zip"
+          python -c "import shutil; shutil.make_archive('out/NurseOCReport-$tag-win7-$arch', 'zip', root_dir='dist', base_dir='$pkgName')"
+          if (-not (Test-Path $zipPath)) { throw "Missing zip $zipPath" }
+
+      - name: Upload Windows portable archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: out/NurseOCReport-*-win7-*.zip
+          retention-days: 1
+
+  publish:
+    needs: [prepare, build-android, build-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release_staging
+
+      - name: Prepare checksums and publish GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.prepare.outputs.tag }}"
+          mkdir -p release_assets
+          find release_staging -type f \( -name "*.apk" -o -name "*.zip" \) -exec cp -v {} release_assets/ \;
+          (cd release_assets && sha256sum * > SHA256SUMS.txt)
+          ls -la release_assets
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release_assets/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" release_assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "NurseOCReport $TAG" \
+              --notes "Offline nurse workload OCR and weighted calculation tool for Windows 7 SP1+ x64/x86 and Android 7.0+."
+          fi

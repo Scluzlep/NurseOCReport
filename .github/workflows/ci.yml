@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check repository privacy and policy
+        run: python3 scripts/check_privacy.py
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Fetch third-party sources and OCR models
+        run: python3 scripts/fetch_deps.py
+
+      - name: Configure and build C++ core tests
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNURSEOCR_BUILD_WINDOWS=OFF
+          cmake --build build -j
+
+      - name: Run unit tests
+        run: ctest --test-dir build --output-on-failure
