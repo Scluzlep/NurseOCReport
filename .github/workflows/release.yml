@@ -151,6 +151,7 @@ jobs:
           name: android-release
           path: out/NurseOCReport-*-android.apk
           retention-days: 1
+          if-no-files-found: error
 
   build-windows:
     needs: prepare
@@ -159,7 +160,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64, x86]
+        include:
+          - arch: x64
+            msvc_arch: x64
+          - arch: x86
+            msvc_arch: amd64_x86
     steps:
       - uses: actions/checkout@v4
 
@@ -169,7 +174,7 @@ jobs:
 
       - uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: ${{ matrix.arch }}
+          arch: ${{ matrix.msvc_arch }}
 
       - name: Fetch third-party sources, YY-Thunks, and OCR models
         run: python scripts/fetch_deps.py
@@ -212,20 +217,26 @@ jobs:
           Copy-Item "models/PP_OCRv5_mobile_rec.ncnn.param" "$stageRoot/models/" -Force
           Copy-Item "models/PP_OCRv5_mobile_rec.ncnn.bin" "$stageRoot/models/" -Force
 
-          & ".\$stageRoot\NurseOCReport.exe" --self-test
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $proc = Start-Process -FilePath ".\$stageRoot\NurseOCReport.exe" -ArgumentList "--self-test" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            throw "NurseOCReport.exe --self-test failed with exit code $($proc.ExitCode)"
+          }
 
           New-Item -ItemType Directory -Force -Path "out" | Out-Null
-          $zipPath = "out/NurseOCReport-$tag-win7-$arch.zip"
-          python -c "import shutil; shutil.make_archive('out/NurseOCReport-$tag-win7-$arch', 'zip', root_dir='dist', base_dir='$pkgName')"
+          $zipBase = "out/NurseOCReport-$tag-win7-$arch"
+          $zipPath = "$zipBase.zip"
+          python -c "import shutil; print(shutil.make_archive('$zipBase', 'zip', root_dir='dist', base_dir='$pkgName'))"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path $zipPath)) { throw "Missing zip $zipPath" }
+          Get-Item $zipPath | Select-Object FullName, Length
 
       - name: Upload Windows portable archive artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-${{ matrix.arch }}
-          path: out/NurseOCReport-*-win7-*.zip
+          path: out/NurseOCReport-${{ needs.prepare.outputs.tag }}-win7-${{ matrix.arch }}.zip
           retention-days: 1
+          if-no-files-found: error
 
   publish:
     needs: [prepare, build-android, build-windows]
@@ -245,6 +256,8 @@ jobs:
           TAG="${{ needs.prepare.outputs.tag }}"
           mkdir -p release_assets
           find release_staging -type f \( -name "*.apk" -o -name "*.zip" \) -exec cp -v {} release_assets/ \;
+          test "$(find release_assets -maxdepth 1 -name '*.apk' | wc -l)" -eq 1
+          test "$(find release_assets -maxdepth 1 -name '*.zip' | wc -l)" -eq 2
           (cd release_assets && sha256sum * > SHA256SUMS.txt)
           ls -la release_assets
 
