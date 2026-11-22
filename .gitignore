@@ -1,0 +1,51 @@
+# Archive and private local reports (never commit)
+NurseOCR_讨论归档_2026-11-22/
+测试方法报告.md
+
+# Build outputs and caches
+build/
+build-*/
+out/
+tmp/
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+*.obj
+*.pdb
+
+# Downloaded dependencies and OCR models
+deps/
+models/
+android/app/src/main/assets/*.bin
+android/app/src/main/assets/*.param
+
+# Android / Gradle local state
+android/.gradle/
+android/local.properties
+android/app/build/
+android/app/.cxx/
+android/.idea/
+*.apk
+*.aab
+
+# Signing secrets (never commit)
+*-signing/
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.key
+*.pem
+*.password.txt
+.env
+.env.*
+
+# Editor and OS files
+.vs/
+.vscode/
+__pycache__/
+*.pyc
+Thumbs.db
+.DS_Store
