@@ -482,7 +482,7 @@ ImageRgb OcrEngine::auto_orient_table_photo(const ImageRgb& src, int& out_rot_de
             std::string txt;
             float conf = 0.0f;
             if (impl_->rec_general_line(sub, txt, conf) && conf > 0.55f) {
-                if (contains_any(txt, {"工作量", "系数", "姓名", "序号", "职称", "职务", "第", "护士", "骨"})) {
+                if (contains_any(txt, {"工作量", "系数", "姓名", "序号", "职称", "职务", "第", "护士", "统计"})) {
                     s += 100;
                 } else if (is_cjk_char_utf8(txt)) {
                     s += 10;
@@ -661,7 +661,7 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
         if (frac > 1e-4 && std::fabs(frac - 0.5) > 1e-4) {
             cell.status = ReviewStatus::NeedsReview;
             cell.review_reason = "小数待核";
-        } else if (inferred_thin_one || min_margin < 0.08f || cell.confidence < 0.65f) {
+        } else if (inferred_thin_one || min_margin < 0.06f || cell.confidence < 0.42f) {
             cell.status = ReviewStatus::NeedsReview;
             cell.review_reason = "置信偏低";
         }
@@ -975,7 +975,7 @@ bool OcrEngine::process_coeff_photo(const ImageRgb& src_img,
     }
 
     for (int r = header_row + 1; r < total_rows; ++r) {
-        ImageRgb name_crop = erase_bottom_underline(grid.crop_cell_rect(r, col_name, 2));
+        ImageRgb name_crop = erase_bottom_underline(grid.crop_cell_rect(r, col_name, 4));
         std::string raw_name;
         float name_conf = 0.0f;
         impl_->rec_general_line(name_crop, raw_name, name_conf);
@@ -986,7 +986,7 @@ bool OcrEngine::process_coeff_photo(const ImageRgb& src_img,
 
         auto read_coeff_col = [&](int col, double& val) -> bool {
             if (col < 0 || col >= total_cols) return false;
-            ImageRgb cc = erase_bottom_underline(grid.crop_cell_rect(r, col, 2));
+            ImageRgb cc = erase_bottom_underline(grid.crop_cell_rect(r, col, 4));
             std::string t;
             float cf = 0.0f;
             if (!impl_->rec_general_line(cc, t, cf)) return false;
@@ -1010,8 +1010,19 @@ bool OcrEngine::process_coeff_photo(const ImageRgb& src_img,
                 row_ocr.duty_coeff = duty_v;
                 row_ocr.total_coeff = total_v;
                 row_ocr.needs_review = false;
+            } else if (duty_v > 0.9 && total_v < 3.0 && title_v < 3.0 && total_v >= title_v - 0.005) {
+                row_ocr.title_coeff = title_v;
+                row_ocr.duty_coeff = std::max(0.0, std::round((total_v - title_v) * 1000.0) / 1000.0);
+                row_ocr.total_coeff = total_v;
+                row_ocr.needs_review = true;
+                row_ocr.review_reason = "职务系数已推算";
+            } else if (title_v == 1.0 && total_v >= 1.04 && total_v <= 1.40 && duty_v < 0.50 && total_v > duty_v) {
+                row_ocr.title_coeff = std::round((total_v - duty_v) * 1000.0) / 1000.0;
+                row_ocr.duty_coeff = duty_v;
+                row_ocr.total_coeff = total_v;
+                row_ocr.needs_review = true;
+                row_ocr.review_reason = "职称系数已推算";
             } else {
-                // Trust total_v if one component is suspiciously out of range
                 row_ocr.title_coeff = title_v;
                 row_ocr.duty_coeff = duty_v;
                 row_ocr.total_coeff = title_v + duty_v;
