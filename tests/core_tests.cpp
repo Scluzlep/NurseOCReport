@@ -634,6 +634,71 @@ void test_ocr_digits_decimals_headers_and_banner() {
     CHECK(approx(c4.value, 4.0, 1e-4) || c4.status == ReviewStatus::NeedsReview);
     CHECK(!(approx(c4.value, 6.0, 1e-4) && c4.status != ReviewStatus::NeedsReview));
 
+    // Faint interior stroke inside cell (row 2, col 2) must trigger NeedsReview rather than silent AutoConfirmed Blank,
+    // while neighboring empty cell (row 2, col 3) must remain AutoConfirmed Blank.
+    {
+        int faint_cx = (xs[2] + xs[3]) / 2;
+        int faint_cy = (ys[2] + ys[3]) / 2;
+        for (int dy = -9; dy <= 9; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                int px = faint_cx + dx;
+                int py = faint_cy + dy;
+                uint8_t* p = &cross_img.data[(static_cast<size_t>(py) * W + px) * 3];
+                p[0] = p[1] = p[2] = 232; // diff = 18 on 250 paper
+            }
+        }
+        WorkloadSheet sheet_faint;
+        CHECK(engine.process_workload_photo(cross_img, 2026, 8, cfg, nullptr, sheet_faint, err));
+        CHECK(sheet_faint.rows.size() >= 1);
+        CHECK(sheet_faint.rows[0].cells[1].status == ReviewStatus::NeedsReview);
+        CHECK(sheet_faint.rows[0].cells[2].kind == ValueKind::Blank);
+        CHECK(sheet_faint.rows[0].cells[2].status == ReviewStatus::AutoConfirmed);
+    }
+
+    // High-resolution reduced-contrast table photo (3600x1632) must match canonical extraction without grid-line false positives
+    {
+        const int HW = 3600, HH = 1632;
+        ImageRgb hi_img;
+        hi_img.width = HW;
+        hi_img.height = HH;
+        hi_img.data.resize(static_cast<size_t>(HW) * HH * 3);
+        for (int y = 0; y < HH; ++y) {
+            float sy = (y + 0.5f) * static_cast<float>(H) / HH - 0.5f;
+            int y0 = std::max(0, std::min(H - 1, static_cast<int>(std::floor(sy))));
+            int y1 = std::min(H - 1, y0 + 1);
+            float wy = std::max(0.0f, sy - y0);
+            for (int x = 0; x < HW; ++x) {
+                float sx = (x + 0.5f) * static_cast<float>(W) / HW - 0.5f;
+                int x0 = std::max(0, std::min(W - 1, static_cast<int>(std::floor(sx))));
+                int x1 = std::min(W - 1, x0 + 1);
+                float wx = std::max(0.0f, sx - x0);
+                for (int c = 0; c < 3; ++c) {
+                    float p00 = img.data[(static_cast<size_t>(y0) * W + x0) * 3 + c];
+                    float p10 = img.data[(static_cast<size_t>(y0) * W + x1) * 3 + c];
+                    float p01 = img.data[(static_cast<size_t>(y1) * W + x0) * 3 + c];
+                    float p11 = img.data[(static_cast<size_t>(y1) * W + x1) * 3 + c];
+                    float v = (p00 * (1.0f - wx) + p10 * wx) * (1.0f - wy) +
+                              (p01 * (1.0f - wx) + p11 * wx) * wy;
+                    // Reduce contrast to simulate low-contrast mobile capture
+                    int lc = static_cast<int>(std::round(42.0f + (v / 255.0f) * 185.0f));
+                    hi_img.data[(static_cast<size_t>(y) * HW + x) * 3 + c] =
+                        static_cast<uint8_t>(std::max(0, std::min(255, lc)));
+                }
+            }
+        }
+        WorkloadSheet sheet_hi;
+        CHECK(engine.process_workload_photo(hi_img, 2024, 1, cfg, nullptr, sheet_hi, err));
+        CHECK(sheet_hi.rows.size() == 3);
+        const auto& hr0 = sheet_hi.rows[0].cells;
+        CHECK(hr0[1].kind == ValueKind::Number && approx(hr0[1].value, 1.0, 1e-4));
+        CHECK(hr0[8].kind == ValueKind::Number && approx(hr0[8].value, 4.0, 1e-4));
+        const auto& hr1 = sheet_hi.rows[1].cells;
+        CHECK(hr1[0].kind == ValueKind::Number && approx(hr1[0].value, 2.0, 1e-4));
+        CHECK(hr1[1].kind == ValueKind::Number && approx(hr1[1].value, 3.0, 1e-4));
+        CHECK(hr1[7].kind == ValueKind::Blank && hr1[7].status == ReviewStatus::AutoConfirmed);
+        CHECK(hr1[8].kind == ValueKind::Blank && hr1[8].status == ReviewStatus::AutoConfirmed);
+    }
+
     std::cout << "[PASS] test_ocr_digits_decimals_headers_and_banner\n";
 }
 

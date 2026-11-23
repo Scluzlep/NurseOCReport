@@ -744,7 +744,9 @@ struct OcrEngine::Impl {
                 shape_digit_tokens.push_back({col, '1'});
             } else if (tok == "·" || tok == "。" || tok == "、" || tok == "," || tok == "，") {
                 shape_digit_tokens.push_back({col, '.'});
-            } else if (tok == "了" || tok == "z" || tok == "Z" || tok == "ろ") {
+            } else if (tok == "Z" || tok == "z") {
+                shape_digit_tokens.push_back({col, '2'});
+            } else if (tok == "了" || tok == "ろ") {
                 shape_digit_tokens.push_back({col, '3'});
             } else if (tok == "O" || tok == "o" || tok == "D") {
                 shape_digit_tokens.push_back({col, '0'});
@@ -1063,7 +1065,7 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
         cell.ocr_value = 0.0;
         cell.confidence = 0.35f;
         cell.status = ReviewStatus::NeedsReview;
-        cell.review_reason = "疑似擦除";
+        cell.review_reason = "疑似擦除或偏淡";
         return;
     }
 
@@ -1078,14 +1080,20 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
         return;
     }
 
-    // 1. Decode constrained numeric tokens {blank, '0'..'9', '.'} + shape fallbacks
+    // 1. Decode pure numeric tokens {blank, '0'..'9', '.'} alongside shape fallbacks and global non-digit scores
     std::string unconstrained;
     std::string num_str;
+    std::string pure_num_str;
     int last_u = 0;
     int last_n = 0;
+    int last_pure = 0;
     float min_margin = 999.0f;
     float top_prob_sum = 0.0f;
     int num_chars = 0;
+    float pure_prob_sum = 0.0f;
+    int pure_chars = 0;
+    float u_max_prob = 0.0f;
+    float max_other_non_shape_prob = 0.0f;
     bool ctc_saw_vertical_token = false;
 
     for (int t = 0; t < out.h; ++t) {
@@ -1096,6 +1104,9 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
         for (int j = 1; j < out.w; ++j) {
             if (row[j] > row[u_best]) u_best = j;
         }
+        if (u_best > 0) {
+            u_max_prob = std::max(u_max_prob, row[u_best]);
+        }
         if (u_best != last_u) {
             last_u = u_best;
             if (u_best > 0 && u_best - 1 < character_dict_size) {
@@ -1105,42 +1116,64 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
             }
         }
 
-        // Constrained numeric subset: blank(0) + numeric_tokens
+        // Constrained pure numeric subset: blank(0) + numeric_tokens
         float blank_logit = row[0];
-        int n_best_col = 0;
-        char n_best_ch = '\0';
-        float n_best_logit = blank_logit;
-        float n_second_logit = -1e9f;
+        int p_best_col = 0;
+        char p_best_ch = '\0';
+        float p_best_logit = blank_logit;
+        float p_second_logit = -1e9f;
+        bool u_is_numeric = false;
 
         for (const auto& pair : impl_->numeric_tokens) {
             int col = pair.first;
             if (col >= out.w) continue;
+            if (col == u_best) u_is_numeric = true;
             float lg = row[col];
-            if (lg > n_best_logit) {
-                n_second_logit = n_best_logit;
-                n_best_logit = lg;
-                n_best_col = col;
-                n_best_ch = pair.second;
-            } else if (lg > n_second_logit) {
-                n_second_logit = lg;
+            if (lg > p_best_logit) {
+                p_second_logit = p_best_logit;
+                p_best_logit = lg;
+                p_best_col = col;
+                p_best_ch = pair.second;
+            } else if (lg > p_second_logit) {
+                p_second_logit = lg;
             }
         }
-        if (blank_logit < n_best_logit && blank_logit > n_second_logit) {
-            n_second_logit = blank_logit;
+        if (blank_logit < p_best_logit && blank_logit > p_second_logit) {
+            p_second_logit = blank_logit;
         }
 
-        // Also check if unconstrained picked a shape-similar symbol strongly over blank
-        if (n_best_col == 0 && u_best > 0) {
+        if (p_best_col != last_pure) {
+            last_pure = p_best_col;
+            if (p_best_col > 0 && p_best_ch != '\0') {
+                pure_num_str.push_back(p_best_ch);
+                pure_prob_sum += std::max(0.0f, std::min(1.0f, p_best_logit));
+                ++pure_chars;
+            }
+        }
+
+        // Check if unconstrained picked a shape-similar symbol or truly unrelated non-digit symbol
+        int n_best_col = p_best_col;
+        char n_best_ch = p_best_ch;
+        float n_best_logit = p_best_logit;
+        float n_second_logit = p_second_logit;
+        bool u_is_shape = false;
+        if (u_best > 0) {
             for (const auto& sp : impl_->shape_digit_tokens) {
-                if (sp.first == u_best && row[u_best] > blank_logit) {
-                    n_best_col = u_best;
-                    n_best_ch = sp.second;
-                    n_best_logit = row[u_best];
-                    n_second_logit = blank_logit;
-                    if (sp.second == '1') ctc_saw_vertical_token = true;
+                if (sp.first == u_best) {
+                    u_is_shape = true;
+                    if (n_best_col == 0 && row[u_best] > blank_logit) {
+                        n_best_col = u_best;
+                        n_best_ch = sp.second;
+                        n_best_logit = row[u_best];
+                        n_second_logit = blank_logit;
+                        if (sp.second == '1') ctc_saw_vertical_token = true;
+                    }
                     break;
                 }
             }
+        }
+        if (u_best > 0 && !u_is_numeric && !u_is_shape) {
+            max_other_non_shape_prob = std::max(max_other_non_shape_prob, row[u_best]);
         }
 
         if (n_best_col != last_n) {
@@ -1177,6 +1210,8 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
     }
 
     float ctc_conf = (num_chars > 0) ? (top_prob_sum / num_chars) : 0.0f;
+    float pure_ctc_conf = (pure_chars > 0) ? (pure_prob_sum / pure_chars) : 0.0f;
+    if (min_margin > 100.0f) min_margin = 0.0f;
 
     // 2. Run MNIST-12 on 28x28 normalized foreground patch
     int mnist_digit = -1;
@@ -1190,7 +1225,7 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
     DigitTopology topo = analyze_digit_topology(ink.prepared_digit_canvas);
     bool is_multi_or_decimal = ctc_parsed &&
         (std::fabs(ctc_val - std::round(ctc_val)) > 1e-4 ||
-         (ctc_val >= 10.0 && (ink.component_count >= 2 || ctc_conf >= 0.65f ||
+         (ctc_val >= 10.0 && (ink.component_count >= 2 || pure_ctc_conf >= 0.65f ||
                               (ink.bbox_h > 0 && ink.bbox_w >= ink.bbox_h * 0.65f))));
 
     double final_val = 0.0;
@@ -1203,8 +1238,8 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
     if (is_multi_or_decimal) {
         final_val = ctc_val;
         has_val = true;
-        final_conf = std::max(0.45f, ctc_conf);
-        if (ctc_conf < 0.35f && min_margin < 0.04f) {
+        final_conf = ctc_conf;
+        if (!(ctc_conf >= 0.68f && min_margin >= 0.18f && max_other_non_shape_prob < 0.40f)) {
             ambiguous = true;
             ambig_reason = "置信偏低";
         }
@@ -1216,96 +1251,95 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
         }
 
         bool ctc_is_one = (ctc_digit == 1) || ctc_saw_vertical_token || is_vertical_one_str(unconstrained);
-        if (ctc_digit < 0 && (unconstrained == "了" || unconstrained == "z" || unconstrained == "Z")) {
+        if (ctc_digit < 0 && unconstrained == "了") {
             ctc_digit = 3;
             ctc_conf = std::max(ctc_conf, 0.50f);
         }
+        bool thin_supported_one = ink.tall_thin_single_stroke &&
+                                  (ink.rel_peak >= 0.45f || ink.strong_px >= 25) &&
+                                  ((ctc_digit == 1 && pure_ctc_conf >= 0.20f) ||
+                                   (ctc_is_one && u_max_prob >= 0.28f));
+        bool strong_one_token = thin_supported_one ||
+                                (ctc_digit == 1 && pure_ctc_conf >= 0.35f) ||
+                                (ctc_is_one && u_max_prob >= 0.42f);
 
         if (ctc_is_one && (ink.tall_thin_single_stroke || (has_mnist && mnist_digit == 1))) {
             // Vertical-stroke '1' supported by CTC token + geometry or MNIST-12
             final_val = 1.0;
             has_val = true;
             float p1 = has_mnist ? mnist_probs[1] : 0.0f;
-            final_conf = std::max({ctc_conf, p1, ink.tall_thin_single_stroke ? 0.78f : 0.60f});
-            if (has_mnist && mnist_digit != 1 && mnist_prob > 0.88f && !ink.tall_thin_single_stroke) {
+            bool strong_conflict = (has_mnist && mnist_digit != 1 && mnist_prob >= 0.72f && !ink.tall_thin_single_stroke);
+            bool weak_mnist_for_wide = (has_mnist && !ink.tall_thin_single_stroke && (mnist_digit != 1 || mnist_prob < 0.75f));
+            if (strong_conflict || !strong_one_token || weak_mnist_for_wide) {
                 ambiguous = true;
-                ambig_reason = "数字待核";
+                ambig_reason = strong_conflict ? "数字待核" : "置信偏低";
+                final_conf = std::min(0.62f, std::max({pure_ctc_conf, u_max_prob * 0.70f, p1}));
+            } else {
+                final_conf = std::max({pure_ctc_conf, p1, ink.tall_thin_single_stroke ? 0.78f : 0.65f});
             }
         } else if (ctc_digit < 0 && ink.tall_thin_single_stroke) {
-            // CTC collapsed to empty on a vertical stroke: fuse with MNIST-12
+            // CTC had no '1' or vertical token: flag NeedsReview even for vertical strokes
             if (!has_mnist || mnist_digit == 1 || mnist_probs[1] >= 0.25f) {
                 final_val = 1.0;
                 has_val = true;
-                final_conf = has_mnist ? std::max(0.70f, mnist_probs[1]) : 0.68f;
-            } else if (mnist_prob >= 0.82f) {
+                final_conf = has_mnist ? std::min(0.62f, std::max(0.35f, mnist_probs[1])) : 0.45f;
+            } else {
                 final_val = static_cast<double>(mnist_digit);
                 has_val = true;
-                final_conf = mnist_prob;
-                ambiguous = true;
-                ambig_reason = "数字待核";
-            } else {
-                final_val = 1.0;
-                has_val = true;
-                final_conf = 0.55f;
-                ambiguous = true;
-                ambig_reason = "置信偏低";
+                final_conf = std::min(0.62f, mnist_prob);
             }
+            ambiguous = true;
+            ambig_reason = "置信偏低";
         } else if (topo.looks_like_open_four &&
-                   ((ctc_digit == 6) || (has_mnist && mnist_digit == 6))) {
-            // Open-top two-stem '4' cannot safely become unflagged '6'
+                   ((ctc_digit == 6) || (has_mnist && mnist_digit == 6) ||
+                    unconstrained == "U" || unconstrained == "u")) {
+            // Open-top two-stem '4' cannot safely become unflagged '6' or collapse into 'U'
             final_val = 4.0;
             has_val = true;
-            if (ctc_digit == 4) {
-                final_conf = std::max(0.68f, ctc_conf);
-                if (ctc_conf < 0.45f) {
-                    ambiguous = true;
-                    ambig_reason = "置信偏低";
-                }
+            if (ctc_digit == 4 && has_mnist && mnist_digit == 4 && pure_ctc_conf >= 0.60f) {
+                final_conf = std::max(0.70f, pure_ctc_conf);
             } else {
-                final_conf = 0.55f;
+                final_conf = std::min(0.60f, std::max(0.35f, pure_ctc_conf));
                 ambiguous = true;
                 ambig_reason = "数字待核";
             }
         } else if (ctc_digit >= 0 && has_mnist && ctc_digit == mnist_digit) {
-            // CTC and MNIST-12 agree on the exact digit 0-9
+            // CTC and MNIST-12 agree: auto-confirm only when both branches give solid, unambiguous support
             final_val = static_cast<double>(ctc_digit);
             has_val = true;
-            final_conf = std::max(ctc_conf, mnist_prob);
             is_standalone_zero = (ctc_digit == 0);
-            if (final_conf < 0.45f || (ctc_conf < 0.35f && mnist_prob < 0.50f)) {
+            float ctc_support = pure_ctc_conf;
+            if (ctc_digit == 2 && (unconstrained == "Z" || unconstrained == "z") && u_max_prob >= 0.65f) {
+                ctc_support = std::max(ctc_support, 0.75f * u_max_prob);
+            } else if (ctc_digit == 3 && unconstrained == "了" && u_max_prob >= 0.65f) {
+                ctc_support = std::max(ctc_support, 0.65f * u_max_prob);
+            } else if (ctc_digit == 0 && (unconstrained == "O" || unconstrained == "o") && u_max_prob >= 0.65f) {
+                ctc_support = std::max(ctc_support, 0.75f * u_max_prob);
+            }
+            float mnist_margin = mnist_prob - mnist_second;
+            bool both_strong = (mnist_prob >= 0.78f && mnist_margin >= 0.42f &&
+                                ((ctc_support >= 0.26f) ||
+                                 (ctc_support >= 0.08f && mnist_prob >= 0.96f && mnist_margin >= 0.88f && max_other_non_shape_prob < 0.80f)));
+            bool ctc_dominant_agreed = (pure_ctc_conf >= 0.85f && mnist_prob >= 0.55f && mnist_margin >= 0.15f && max_other_non_shape_prob < 0.35f);
+            bool no_strong_conflict = !(pure_ctc_conf < 0.20f && max_other_non_shape_prob >= 0.50f && ctc_support < 0.35f && mnist_prob < 0.97f);
+            if ((!both_strong && !ctc_dominant_agreed) || !no_strong_conflict) {
                 ambiguous = true;
                 ambig_reason = "置信偏低";
+                final_conf = std::min(std::max(0.15f, std::max(pure_ctc_conf, ctc_support)), mnist_prob);
+            } else {
+                final_conf = std::max(ctc_support, mnist_prob * 0.95f);
             }
         } else if (ctc_digit >= 0 && has_mnist) {
-            // CTC and MNIST-12 disagree: never override PP-OCRv5 silently without review
-            if (mnist_digit == 1 && (ctc_is_one || ink.tall_thin_single_stroke) && mnist_prob >= 0.65f) {
+            // CTC and MNIST-12 disagree: ALWAYS require manual review
+            if (mnist_digit == 1 && (ctc_is_one || ink.tall_thin_single_stroke) && mnist_prob >= 0.75f && strong_one_token) {
                 final_val = 1.0;
                 has_val = true;
                 final_conf = mnist_prob;
-            } else if (ctc_conf >= 0.82f && min_margin >= 0.25f && mnist_prob < 0.65f) {
-                final_val = static_cast<double>(ctc_digit);
-                has_val = true;
-                final_conf = ctc_conf;
-                is_standalone_zero = (ctc_digit == 0);
-            } else if (ctc_conf >= 0.30f) {
-                final_val = static_cast<double>(ctc_digit);
-                has_val = true;
-                final_conf = ctc_conf;
-                is_standalone_zero = (ctc_digit == 0);
-                ambiguous = true;
-                ambig_reason = "数字待核";
-            } else if (mnist_prob >= 0.85f) {
-                final_val = static_cast<double>(mnist_digit);
-                has_val = true;
-                final_conf = mnist_prob;
-                is_standalone_zero = (mnist_digit == 0);
-                ambiguous = true;
-                ambig_reason = "数字待核";
             } else {
-                int chosen = (mnist_prob > ctc_conf) ? mnist_digit : ctc_digit;
+                int chosen = (pure_ctc_conf >= 0.25f || mnist_prob < 0.80f) ? ctc_digit : mnist_digit;
                 final_val = static_cast<double>(chosen);
                 has_val = true;
-                final_conf = std::max(ctc_conf, mnist_prob);
+                final_conf = std::min(0.62f, std::max(pure_ctc_conf, mnist_prob * 0.65f));
                 is_standalone_zero = (chosen == 0);
                 ambiguous = true;
                 ambig_reason = "数字待核";
@@ -1313,16 +1347,16 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
         } else if (ctc_digit >= 0) {
             final_val = static_cast<double>(ctc_digit);
             has_val = true;
-            final_conf = ctc_conf;
+            final_conf = pure_ctc_conf;
             is_standalone_zero = (ctc_digit == 0);
-            if (min_margin < 0.05f || ctc_conf < 0.40f) {
+            if (min_margin < 0.15f || pure_ctc_conf < 0.55f || max_other_non_shape_prob >= 0.40f) {
                 ambiguous = true;
                 ambig_reason = "置信偏低";
             }
-        } else if (has_mnist && mnist_prob >= 0.48f) {
+        } else if (has_mnist && mnist_prob >= 0.45f) {
             final_val = static_cast<double>(mnist_digit);
             has_val = true;
-            final_conf = mnist_prob;
+            final_conf = std::min(0.60f, mnist_prob);
             is_standalone_zero = (mnist_digit == 0);
             ambiguous = true;
             ambig_reason = "置信偏低";

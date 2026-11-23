@@ -55,6 +55,51 @@ GrayImage downsample_gray(const GrayImage& src, int target_max_side, float& out_
     return dst;
 }
 
+ImageRgb downsample_rgb_box_area(const ImageRgb& src, int target_max_side, float& out_sx, float& out_sy) {
+    int max_dim = std::max(src.width, src.height);
+    if (!src.valid() || max_dim <= target_max_side) {
+        out_sx = 1.0f;
+        out_sy = 1.0f;
+        return src;
+    }
+    float scale = static_cast<float>(target_max_side) / static_cast<float>(max_dim);
+    int dw = std::max(32, static_cast<int>(std::round(src.width * scale)));
+    int dh = std::max(32, static_cast<int>(std::round(src.height * scale)));
+    out_sx = static_cast<float>(dw) / static_cast<float>(src.width);
+    out_sy = static_cast<float>(dh) / static_cast<float>(src.height);
+
+    ImageRgb dst;
+    dst.width = dw;
+    dst.height = dh;
+    dst.data.resize(static_cast<size_t>(dw) * static_cast<size_t>(dh) * 3);
+
+    float inv_sx = static_cast<float>(src.width) / static_cast<float>(dw);
+    float inv_sy = static_cast<float>(src.height) / static_cast<float>(dh);
+    for (int y = 0; y < dh; ++y) {
+        int iy0 = std::max(0, std::min(src.height - 1, static_cast<int>(std::floor(y * inv_sy))));
+        int iy1 = std::max(iy0, std::min(src.height - 1, static_cast<int>(std::ceil((y + 1) * inv_sy)) - 1));
+        for (int x = 0; x < dw; ++x) {
+            int ix0 = std::max(0, std::min(src.width - 1, static_cast<int>(std::floor(x * inv_sx))));
+            int ix1 = std::max(ix0, std::min(src.width - 1, static_cast<int>(std::ceil((x + 1) * inv_sx)) - 1));
+            int r_sum = 0, g_sum = 0, b_sum = 0, cnt = 0;
+            for (int sy = iy0; sy <= iy1; ++sy) {
+                const uint8_t* rp = &src.data[static_cast<size_t>(sy) * src.width * 3];
+                for (int sx = ix0; sx <= ix1; ++sx) {
+                    r_sum += rp[sx * 3 + 0];
+                    g_sum += rp[sx * 3 + 1];
+                    b_sum += rp[sx * 3 + 2];
+                    ++cnt;
+                }
+            }
+            uint8_t* dp = &dst.data[(static_cast<size_t>(y) * dw + x) * 3];
+            dp[0] = clamp_u8((r_sum + cnt / 2) / cnt);
+            dp[1] = clamp_u8((g_sum + cnt / 2) / cnt);
+            dp[2] = clamp_u8((b_sum + cnt / 2) / cnt);
+        }
+    }
+    return dst;
+}
+
 std::vector<int32_t> build_integral(const GrayImage& g) {
     int w = g.width, h = g.height;
     std::vector<int32_t> integ(static_cast<size_t>(w + 1) * static_cast<size_t>(h + 1), 0);
@@ -654,8 +699,8 @@ bool extract_rectified_table_grid(const ImageRgb& img,
         return false;
     }
 
-    int rect_w = std::max(1400, std::min(2200, static_cast<int>(std::round(w_est * 1.25f))));
-    int rect_h = std::max(600, static_cast<int>(std::round(rect_w * (h_est / w_est))));
+    const int rect_w = 1720;
+    int rect_h = std::max(420, std::min(2600, static_cast<int>(std::round(rect_w * (h_est / std::max(1.0f, w_est))))));
     const float pad = 18.0f;
 
     std::array<Point2f, 4> dst_pts = {
@@ -670,27 +715,48 @@ bool extract_rectified_table_grid(const ImageRgb& img,
         return false;
     }
 
-    // Warp into padded destination using H_rect_to_orig directly
+    const ImageRgb* src_ptr = &img;
+    ImageRgb src_ds_buf;
+    Homography h_rect_to_src = out_grid.h_rect_to_orig;
+    if (std::max(img.width, img.height) > 2100) {
+        float sx_ds = 1.0f, sy_ds = 1.0f;
+        src_ds_buf = downsample_rgb_box_area(img, 1920, sx_ds, sy_ds);
+        src_ptr = &src_ds_buf;
+        std::array<Point2f, 4> src_corners = corners;
+        for (int i = 0; i < 4; ++i) {
+            src_corners[i].x *= sx_ds;
+            src_corners[i].y *= sy_ds;
+        }
+        Homography h_src_to_rect;
+        if (!solve_homography(src_corners, dst_pts, h_src_to_rect) ||
+            !h_src_to_rect.invert(h_rect_to_src)) {
+            out_err = "四角透视矩阵无效，请重新调整四角";
+            return false;
+        }
+    }
+
+    // Warp into padded destination using h_rect_to_src directly
+    const ImageRgb& warp_src = *src_ptr;
     out_grid.rectified_rgb.width = rect_w;
     out_grid.rectified_rgb.height = rect_h;
     out_grid.rectified_rgb.data.assign(static_cast<size_t>(rect_w) * rect_h * 3, 255);
-    const Homography& hinv = out_grid.h_rect_to_orig;
+    const Homography& hinv = h_rect_to_src;
     for (int y = 0; y < rect_h; ++y) {
         for (int x = 0; x < rect_w; ++x) {
             double denom = hinv.m[6] * x + hinv.m[7] * y + hinv.m[8];
             if (std::fabs(denom) < 1e-8) continue;
             float sx = static_cast<float>((hinv.m[0] * x + hinv.m[1] * y + hinv.m[2]) / denom);
             float sy = static_cast<float>((hinv.m[3] * x + hinv.m[4] * y + hinv.m[5]) / denom);
-            if (sx < 0.0f || sy < 0.0f || sx > img.width - 1.0f || sy > img.height - 1.0f) continue;
+            if (sx < 0.0f || sy < 0.0f || sx > warp_src.width - 1.0f || sy > warp_src.height - 1.0f) continue;
             int x0 = static_cast<int>(std::floor(sx));
             int y0 = static_cast<int>(std::floor(sy));
-            int x1 = std::min(img.width - 1, x0 + 1);
-            int y1 = std::min(img.height - 1, y0 + 1);
+            int x1 = std::min(warp_src.width - 1, x0 + 1);
+            int y1 = std::min(warp_src.height - 1, y0 + 1);
             float wx = sx - x0, wy = sy - y0;
-            const uint8_t* p00 = &img.data[(static_cast<size_t>(y0) * img.width + x0) * 3];
-            const uint8_t* p10 = &img.data[(static_cast<size_t>(y0) * img.width + x1) * 3];
-            const uint8_t* p01 = &img.data[(static_cast<size_t>(y1) * img.width + x0) * 3];
-            const uint8_t* p11 = &img.data[(static_cast<size_t>(y1) * img.width + x1) * 3];
+            const uint8_t* p00 = &warp_src.data[(static_cast<size_t>(y0) * warp_src.width + x0) * 3];
+            const uint8_t* p10 = &warp_src.data[(static_cast<size_t>(y0) * warp_src.width + x1) * 3];
+            const uint8_t* p01 = &warp_src.data[(static_cast<size_t>(y1) * warp_src.width + x0) * 3];
+            const uint8_t* p11 = &warp_src.data[(static_cast<size_t>(y1) * warp_src.width + x1) * 3];
             uint8_t* dp = &out_grid.rectified_rgb.data[(static_cast<size_t>(y) * rect_w + x) * 3];
             for (int c = 0; c < 3; ++c) {
                 float v = (p00[c] * (1.0f - wx) + p10[c] * wx) * (1.0f - wy) +
@@ -801,8 +867,9 @@ bool extract_rectified_table_grid(const ImageRgb& img,
         std::vector<float> tracked(S_h, y_ref);
         std::vector<bool> valid(S_h, false);
         auto track_h = [&](int s, float cur_y) {
-            int y0 = std::max(1, static_cast<int>(std::round(cur_y)) - 14);
-            int y1 = std::min(rect_h - 2, static_cast<int>(std::round(cur_y)) + 14);
+            int track_h_rad = std::max(14, rect_h / 68);
+            int y0 = std::max(1, static_cast<int>(std::round(cur_y)) - track_h_rad);
+            int y1 = std::min(rect_h - 2, static_cast<int>(std::round(cur_y)) + track_h_rad);
             int best_y = -1;
             float best_v = 0.8f;
             for (int y = y0; y <= y1; ++y) {
@@ -887,15 +954,15 @@ bool extract_rectified_table_grid(const ImageRgb& img,
         out_grid.col_x_base = find_1d_peaks(v_smooth, min_col_dist, 0.18f);
     }
 
-    // Filter out isolated tall strokes (e.g. a handwritten '1' in a single cell) that only span a few strips
+    // Filter out isolated tall strokes (e.g. a handwritten '1' or aligned CJK stems) that only span a few strips
     {
         std::vector<float> verified_cols;
-        const int min_active_strips = std::max(2, (S_v + 1) / 2);
+        const int min_active_strips = std::max(3, (S_v * 5) / 8);
         for (float px : out_grid.col_x_base) {
             int active_strips = 0;
             int xc = static_cast<int>(std::round(px));
-            int x0 = std::max(0, xc - 24);
-            int x1 = std::min(rect_w - 1, xc + 24);
+            int x0 = std::max(0, xc - 12);
+            int x1 = std::min(rect_w - 1, xc + 12);
             for (int s = 0; s < S_v; ++s) {
                 float mx = 0.0f;
                 for (int x = x0; x <= x1; ++x) mx = std::max(mx, v_strip_profs[s][x]);
@@ -957,8 +1024,9 @@ bool extract_rectified_table_grid(const ImageRgb& img,
         auto& valid = all_valid[c];
         std::fill(tracked.begin(), tracked.end(), x_ref);
         auto track_strip = [&](int s, float cur_x) {
-            int x0 = std::max(1, static_cast<int>(std::round(cur_x)) - 10);
-            int x1 = std::min(rect_w - 2, static_cast<int>(std::round(cur_x)) + 10);
+            int track_v_rad = std::max(14, rect_w / 108);
+            int x0 = std::max(1, static_cast<int>(std::round(cur_x)) - track_v_rad);
+            int x1 = std::min(rect_w - 2, static_cast<int>(std::round(cur_x)) + track_v_rad);
             int best_x = -1;
             float best_v = 1.0f;
             for (int x = x0; x <= x1; ++x) {
@@ -1198,7 +1266,7 @@ RawCellStats extract_cell_diff(const RectifiedGrid& grid, int row, int col) {
     cell_h_est = bot_y - top_y;
     int trim_x = (cell_w_est >= 28.0f) ? 4 : 2;
     int top_trim_y = (cell_h_est >= 24.0f) ? 3 : 2;
-    int bot_trim_y = 1;
+    int bot_trim_y = 2;
     int x0 = std::max(0, static_cast<int>(std::round(left_x)) + trim_x);
     int x1 = std::min(g.width, static_cast<int>(std::round(right_x)) - trim_x);
     int y0 = std::max(0, static_cast<int>(std::round(top_y)) + top_trim_y);
@@ -1233,26 +1301,36 @@ RawCellStats extract_cell_diff(const RectifiedGrid& grid, int row, int col) {
         }
     }
 
-    // Record columns belonging to a narrow interior descending vertical stroke just above bottom border
+    // Record columns belonging strictly to narrow interior vertical stems just above bottom border
     std::vector<uint8_t> bottom_stem_col(static_cast<size_t>(st.w), 0);
-    if (st.h >= 8) {
-        int cy_lo = std::max(1, st.h - 6);
-        int cy_hi = std::max(cy_lo, st.h - 4);
+    if (st.h >= 8 && st.w >= 12) {
+        int cy_lo = std::max(1, st.h - 5);
+        int cy_hi = std::max(cy_lo, st.h - 2);
         for (int y = cy_lo; y <= cy_hi; ++y) {
             int dark = 0;
             for (int x = 0; x < st.w; ++x) {
                 if (st.diff[static_cast<size_t>(y) * st.w + x] > 18.0f) ++dark;
             }
-            if (dark >= static_cast<int>(st.w * 0.55f)) continue;
-            for (int x = 3; x < st.w - 3; ++x) {
-                if (st.diff[static_cast<size_t>(y) * st.w + x] > 20.0f) {
-                    bottom_stem_col[static_cast<size_t>(x)] = 1;
+            if (dark >= static_cast<int>(st.w * 0.50f)) continue;
+            for (int x = 4; x < st.w - 4;) {
+                if (st.diff[static_cast<size_t>(y) * st.w + x] <= 20.0f) {
+                    ++x;
+                    continue;
                 }
+                int rx = x;
+                while (rx < st.w - 4 && st.diff[static_cast<size_t>(y) * st.w + rx] > 20.0f) {
+                    ++rx;
+                }
+                int run_w = rx - x;
+                if (run_w >= 1 && run_w <= 6) {
+                    for (int k = x; k < rx; ++k) bottom_stem_col[static_cast<size_t>(k)] = 1;
+                }
+                x = rx;
             }
         }
         // Dilate stem mask by +-1px horizontally for slight slant across bottom border
         std::vector<uint8_t> dilated = bottom_stem_col;
-        for (int x = 3; x < st.w - 3; ++x) {
+        for (int x = 4; x < st.w - 4; ++x) {
             if (bottom_stem_col[static_cast<size_t>(x)]) {
                 dilated[static_cast<size_t>(x - 1)] = 1;
                 dilated[static_cast<size_t>(x + 1)] = 1;
@@ -1261,7 +1339,7 @@ RawCellStats extract_cell_diff(const RectifiedGrid& grid, int row, int col) {
         bottom_stem_col.swap(dilated);
     }
 
-    // Clear residual border grid lines along outer edges while preserving crossing vertical stems at bottom
+    // Clear residual border grid lines along outer edges while preserving narrow crossing vertical stems at bottom
     auto clear_edge_row = [&](int y, bool is_bottom) {
         int dark = 0;
         for (int x = 0; x < st.w; ++x) if (st.diff[static_cast<size_t>(y) * st.w + x] > 18.0f) ++dark;
@@ -1291,7 +1369,7 @@ RawCellStats extract_cell_diff(const RectifiedGrid& grid, int row, int col) {
         clear_edge_col(st.w - 1 - k);
     }
 
-    // Recover cross-border descending tail (e.g. lower stem of '4'/'7'/'9') below y1 along narrow stem
+    // Recover cross-border descending tail (e.g. lower stem of '4'/'7'/'9') below bot_y along narrow stem
     if (st.h >= 6 && y1 < g.height) {
         int tail_y = st.h - 1;
         int stem_x0 = st.w, stem_x1 = -1;
@@ -1312,7 +1390,7 @@ RawCellStats extract_cell_diff(const RectifiedGrid& grid, int row, int col) {
                 ++rx;
             }
             int span_w = rx - x;
-            if (span_w >= 1 && span_w <= 10 && span_w > best_span_w) {
+            if (span_w >= 1 && span_w <= 8 && span_w > best_span_w) {
                 best_span_w = span_w;
                 stem_x0 = x;
                 stem_x1 = rx - 1;
@@ -1320,24 +1398,59 @@ RawCellStats extract_cell_diff(const RectifiedGrid& grid, int row, int col) {
             x = rx;
         }
         if (stem_x1 >= stem_x0) {
-            int max_extra = std::min(6, g.height - y1);
             int sx0 = std::max(3, stem_x0 - 2);
             int sx1 = std::min(st.w - 4, stem_x1 + 2);
-            for (int dy = 0; dy < max_extra; ++dy) {
-                int ey = y1 + dy;
+            int bx0 = std::max(3, stem_x0 - 1);
+            int bx1 = std::min(st.w - 4, stem_x1 + 1);
+            int wx0 = std::max(0, sx0 - 3);
+            int wx1 = std::min(st.w - 1, sx1 + 3);
+            int border_y = static_cast<int>(std::round(bot_y));
+
+            auto probe_narrow_stem_row = [&](int ey, std::vector<float>& out_row) -> bool {
+                if (ey < 0 || ey >= g.height) return false;
                 const uint8_t* rp = &g.data[static_cast<size_t>(ey) * g.width + x0];
-                std::vector<float> extra_row(static_cast<size_t>(st.w), 0.0f);
-                bool any_stem_px = false;
-                for (int x = sx0; x <= sx1; ++x) {
+                out_row.assign(static_cast<size_t>(st.w), 0.0f);
+                int stem_px = 0;
+                int wide_px = 0;
+                for (int x = wx0; x <= wx1; ++x) {
                     float d = std::max(0.0f, st.bg - static_cast<float>(rp[x]));
-                    if (d > 18.0f) {
-                        extra_row[static_cast<size_t>(x)] = d;
-                        any_stem_px = true;
+                    if (d > 13.5f) {
+                        ++wide_px;
+                        if (x >= sx0 && x <= sx1) {
+                            out_row[static_cast<size_t>(x)] = d;
+                            ++stem_px;
+                        }
                     }
                 }
-                if (!any_stem_px) break;
-                st.diff.insert(st.diff.end(), extra_row.begin(), extra_row.end());
-                ++st.h;
+                return stem_px >= 1 && wide_px <= (sx1 - sx0 + 1) + 3;
+            };
+
+            std::vector<float> probe_row;
+            int tail_start = std::max(y1, border_y + 2);
+            bool has_below_border_tail =
+                probe_narrow_stem_row(tail_start, probe_row) ||
+                probe_narrow_stem_row(tail_start + 1, probe_row);
+
+            if (has_below_border_tail) {
+                // Bridge trimmed border rows strictly along narrow stem columns [bx0..bx1]
+                for (int ey = y1; ey < std::min(g.height, tail_start); ++ey) {
+                    const uint8_t* rp = &g.data[static_cast<size_t>(ey) * g.width + x0];
+                    std::vector<float> bridge_row(static_cast<size_t>(st.w), 0.0f);
+                    for (int x = bx0; x <= bx1; ++x) {
+                        float d = std::max(0.0f, st.bg - static_cast<float>(rp[x]));
+                        if (d > 18.0f) bridge_row[static_cast<size_t>(x)] = d;
+                    }
+                    st.diff.insert(st.diff.end(), bridge_row.begin(), bridge_row.end());
+                    ++st.h;
+                }
+                // Append up to 6 descending stem rows below the horizontal border
+                int max_ey = std::min(g.height, tail_start + 6);
+                for (int ey = tail_start; ey < max_ey; ++ey) {
+                    std::vector<float> extra_row;
+                    if (!probe_narrow_stem_row(ey, extra_row)) break;
+                    st.diff.insert(st.diff.end(), extra_row.begin(), extra_row.end());
+                    ++st.h;
+                }
             }
         }
     }
@@ -1349,6 +1462,7 @@ RawCellStats extract_cell_diff(const RectifiedGrid& grid, int row, int col) {
     }
     std::vector<uint8_t> vis(fg.size(), 0);
     std::vector<int> comp;
+    int side_margin = std::max(2, st.w / 12);
     for (int y = 0; y < st.h; ++y) {
         for (int x = 0; x < st.w; ++x) {
             size_t idx = static_cast<size_t>(y) * st.w + x;
@@ -1382,10 +1496,25 @@ RawCellStats extract_cell_diff(const RectifiedGrid& grid, int row, int col) {
             double cy = sum_y / comp.size();
             int cw = maxx - minx + 1;
             int ch = maxy - miny + 1;
-            // 1. Vertical grid line residue clinging to outer left/right border margins or spanning full height
-            bool side_vbar = ((maxx <= 5 || minx >= st.w - 6) && cw <= 7) ||
-                             ((minx <= 5 || maxx >= st.w - 6) && cw <= 9 && ch >= st.h * 0.35f) ||
-                             (miny <= 2 && maxy >= st.h - 3 && cw <= 6);
+            int active_rows = 0;
+            int max_row_hits = 0;
+            if (ch > 0) {
+                std::vector<int> row_hits(static_cast<size_t>(ch), 0);
+                for (int p : comp) {
+                    ++row_hits[static_cast<size_t>((p / st.w) - miny)];
+                }
+                for (int cnt : row_hits) {
+                    if (cnt > 0) ++active_rows;
+                    if (cnt > max_row_hits) max_row_hits = cnt;
+                }
+            }
+            // 1. Vertical grid line residue clinging to outer left/right margins or spanning full height
+            bool touches_outer_side = (maxx <= side_margin || minx >= st.w - 1 - side_margin);
+            bool hugs_side = (minx <= 2 || maxx >= st.w - 3) && cw <= std::max(6, st.w / 7) && ch >= st.h * 0.48f;
+            bool full_height_grid_line = (miny == 0 && maxy >= st.h - 2 && ch >= st.h - 1 &&
+                                          cw <= std::max(12, st.w / 3) &&
+                                          active_rows >= st.h - 1 && max_row_hits <= 7);
+            bool side_vbar = (touches_outer_side && cw <= side_margin + 3) || hugs_side || full_height_grid_line;
             // 2. Horizontal grid line residue clinging to top/bottom edge
             bool edge_hbar = ((maxy <= 3 || miny >= st.h - 4) && ch <= 5 && cw >= st.w * 0.40f);
             // 3. Top-bleed tail from row above: touches top edge, stops well before center
@@ -1468,9 +1597,27 @@ CellInkAnalysis analyze_digit_cell(const RectifiedGrid& grid,
     res.core_px = core_px;
     res.ink_area_ratio = static_cast<float>(res.strong_px) / static_cast<float>(st.w * st.h);
 
+    float interior_max_diff = 0.0f;
+    int interior_mid_px = 0;
+    if (st.w >= 10 && st.h >= 10) {
+        int ix0 = std::max(3, st.w / 8), ix1 = std::min(st.w - 4, st.w - st.w / 8);
+        int iy0 = std::max(3, st.h / 8), iy1 = std::min(st.h - 4, st.h - st.h / 8);
+        for (int y = iy0; y <= iy1; ++y) {
+            for (int x = ix0; x <= ix1; ++x) {
+                float d = st.diff[static_cast<size_t>(y) * st.w + x];
+                interior_max_diff = std::max(interior_max_diff, d);
+                if (d >= 14.0f) ++interior_mid_px;
+            }
+        }
+    }
+
     if (st.max_diff < 22.0f ||
         (res.strong_px < 6 && core_px < 20 && res.rel_peak < 0.45f) ||
         (res.rel_peak < 0.19f && res.strong_px < 2)) {
+        if (interior_max_diff >= 17.5f && interior_mid_px >= 9 && interior_mid_px <= 160) {
+            res.category = InkCategory::SuspectErased;
+            return res;
+        }
         res.category = InkCategory::Empty;
         return res;
     }
