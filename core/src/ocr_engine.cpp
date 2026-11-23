@@ -232,6 +232,153 @@ bool is_vertical_one_str(const std::string& s) {
            s == "/" || s == "!" || s == "丨" || s == "！";
 }
 
+struct DigitTopology {
+    bool looks_like_open_four = false;
+    bool has_lower_enclosed_loop = false;
+    float upper_two_stems_ratio = 0.0f;
+};
+
+DigitTopology analyze_digit_topology(const ImageRgb& canvas_96x48) {
+    DigitTopology res;
+    if (!canvas_96x48.valid()) return res;
+    const int cw = canvas_96x48.width;
+    const int ch = canvas_96x48.height;
+    std::vector<float> ink(static_cast<size_t>(cw) * ch, 0.0f);
+    int minx = cw, maxx = -1, miny = ch, maxy = -1;
+    for (int y = 0; y < ch; ++y) {
+        for (int x = 0; x < cw; ++x) {
+            const uint8_t* p = &canvas_96x48.data[(static_cast<size_t>(y) * cw + x) * 3];
+            float gray = (p[0] * 77.0f + p[1] * 150.0f + p[2] * 29.0f) / 256.0f;
+            float v = std::max(0.0f, std::min(1.0f, (255.0f - gray) / 255.0f));
+            ink[static_cast<size_t>(y) * cw + x] = v;
+            if (v > 0.16f) {
+                minx = std::min(minx, x); maxx = std::max(maxx, x);
+                miny = std::min(miny, y); maxy = std::max(maxy, y);
+            }
+        }
+    }
+    if (maxx < minx || maxy < miny) return res;
+    int bw = maxx - minx + 1;
+    int bh = maxy - miny + 1;
+    if (bh < 10 || bw < 6) return res;
+
+    // Measure fraction of rows in upper zone [0.18*bh .. 0.46*bh] with >=2 ink runs separated by >=2px
+    int uy0 = miny + static_cast<int>(std::floor(0.18f * bh));
+    int uy1 = miny + static_cast<int>(std::ceil(0.46f * bh));
+    uy0 = std::max(0, std::min(ch - 1, uy0));
+    uy1 = std::max(uy0, std::min(ch - 1, uy1));
+    int total_urows = uy1 - uy0 + 1;
+    int two_stem_rows = 0;
+    for (int y = uy0; y <= uy1; ++y) {
+        int runs = 0;
+        int gap_since_run = 999;
+        bool in_run = false;
+        for (int x = minx; x <= maxx; ++x) {
+            float v = ink[static_cast<size_t>(y) * cw + x];
+            if (v > 0.16f) {
+                if (!in_run) {
+                    if (runs == 0 || gap_since_run >= 2) {
+                        ++runs;
+                    }
+                    in_run = true;
+                }
+                gap_since_run = 0;
+            } else if (v <= 0.12f) {
+                if (in_run) {
+                    in_run = false;
+                }
+                ++gap_since_run;
+            } else {
+                // Soft edge pixel: keep current run/gap conservatively
+                if (!in_run) ++gap_since_run;
+            }
+        }
+        if (runs >= 2) ++two_stem_rows;
+    }
+    res.upper_two_stems_ratio = (total_urows > 0)
+        ? (static_cast<float>(two_stem_rows) / static_cast<float>(total_urows))
+        : 0.0f;
+
+    // Flood-fill background (v <= 0.14f) from a 1px exterior frame around bbox
+    int fx0 = std::max(0, minx - 1);
+    int fy0 = std::max(0, miny - 1);
+    int fx1 = std::min(cw - 1, maxx + 1);
+    int fy1 = std::min(ch - 1, maxy + 1);
+    int fw = fx1 - fx0 + 1;
+    int fh = fy1 - fy0 + 1;
+    std::vector<uint8_t> vis(static_cast<size_t>(fw) * fh, 0);
+    std::vector<int> q;
+    auto push_bg = [&](int gx, int gy) {
+        int lx = gx - fx0;
+        int ly = gy - fy0;
+        size_t idx = static_cast<size_t>(ly) * fw + lx;
+        if (!vis[idx] && ink[static_cast<size_t>(gy) * cw + gx] <= 0.14f) {
+            vis[idx] = 1;
+            q.push_back(static_cast<int>(idx));
+        }
+    };
+    for (int gx = fx0; gx <= fx1; ++gx) {
+        push_bg(gx, fy0);
+        push_bg(gx, fy1);
+    }
+    for (int gy = fy0; gy <= fy1; ++gy) {
+        push_bg(fx0, gy);
+        push_bg(fx1, gy);
+    }
+    size_t qh = 0;
+    while (qh < q.size()) {
+        int p = q[qh++];
+        int ly = p / fw, lx = p % fw;
+        const int dxs[4] = {-1, 1, 0, 0};
+        const int dys[4] = {0, 0, -1, 1};
+        for (int k = 0; k < 4; ++k) {
+            int nlx = lx + dxs[k], nly = ly + dys[k];
+            if (nlx < 0 || nlx >= fw || nly < 0 || nly >= fh) continue;
+            size_t ni = static_cast<size_t>(nly) * fw + nlx;
+            if (!vis[ni] && ink[static_cast<size_t>(fy0 + nly) * cw + (fx0 + nlx)] <= 0.14f) {
+                vis[ni] = 1;
+                q.push_back(static_cast<int>(ni));
+            }
+        }
+    }
+    for (int ly = 0; ly < fh; ++ly) {
+        for (int lx = 0; lx < fw; ++lx) {
+            size_t ni = static_cast<size_t>(ly) * fw + lx;
+            if (vis[ni] || ink[static_cast<size_t>(fy0 + ly) * cw + (fx0 + lx)] > 0.14f) continue;
+            // Trace unvisited interior background hole
+            std::vector<int> hq;
+            vis[ni] = 1;
+            hq.push_back(static_cast<int>(ni));
+            double sum_gy = 0.0;
+            size_t hh = 0;
+            while (hh < hq.size()) {
+                int hp = hq[hh++];
+                int hly = hp / fw, hlx = hp % fw;
+                sum_gy += static_cast<double>(fy0 + hly);
+                const int dxs[4] = {-1, 1, 0, 0};
+                const int dys[4] = {0, 0, -1, 1};
+                for (int k = 0; k < 4; ++k) {
+                    int nlx = hlx + dxs[k], nly = hly + dys[k];
+                    if (nlx < 0 || nlx >= fw || nly < 0 || nly >= fh) continue;
+                    size_t nni = static_cast<size_t>(nly) * fw + nlx;
+                    if (!vis[nni] && ink[static_cast<size_t>(fy0 + nly) * cw + (fx0 + nlx)] <= 0.14f) {
+                        vis[nni] = 1;
+                        hq.push_back(static_cast<int>(nni));
+                    }
+                }
+            }
+            if (hq.size() >= 4 && (sum_gy / hq.size()) >= static_cast<double>(miny) + 0.40 * bh) {
+                res.has_lower_enclosed_loop = true;
+                break;
+            }
+        }
+        if (res.has_lower_enclosed_loop) break;
+    }
+
+    res.looks_like_open_four = (res.upper_two_stems_ratio >= 0.30f && !res.has_lower_enclosed_loop);
+    return res;
+}
+
 bool parse_year_month_text(const std::string& raw,
                            int& out_year,
                            bool& got_year,
@@ -1039,7 +1186,8 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
     bool has_mnist = run_mnist12_inference(
         ink.prepared_digit_canvas, mnist_digit, mnist_prob, mnist_second, mnist_probs);
 
-    // 3. Fuse CTC + MNIST-12 + stroke geometry
+    // 3. Fuse CTC + MNIST-12 + stroke geometry + topology
+    DigitTopology topo = analyze_digit_topology(ink.prepared_digit_canvas);
     bool is_multi_or_decimal = ctc_parsed &&
         (std::fabs(ctc_val - std::round(ctc_val)) > 1e-4 ||
          (ctc_val >= 10.0 && (ink.component_count >= 2 || ctc_conf >= 0.65f ||
@@ -1102,40 +1250,57 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
                 ambiguous = true;
                 ambig_reason = "置信偏低";
             }
+        } else if (topo.looks_like_open_four &&
+                   ((ctc_digit == 6) || (has_mnist && mnist_digit == 6))) {
+            // Open-top two-stem '4' cannot safely become unflagged '6'
+            final_val = 4.0;
+            has_val = true;
+            if (ctc_digit == 4) {
+                final_conf = std::max(0.68f, ctc_conf);
+                if (ctc_conf < 0.45f) {
+                    ambiguous = true;
+                    ambig_reason = "置信偏低";
+                }
+            } else {
+                final_conf = 0.55f;
+                ambiguous = true;
+                ambig_reason = "数字待核";
+            }
         } else if (ctc_digit >= 0 && has_mnist && ctc_digit == mnist_digit) {
             // CTC and MNIST-12 agree on the exact digit 0-9
             final_val = static_cast<double>(ctc_digit);
             has_val = true;
             final_conf = std::max(ctc_conf, mnist_prob);
             is_standalone_zero = (ctc_digit == 0);
-            if (final_conf < 0.38f) {
+            if (final_conf < 0.45f || (ctc_conf < 0.35f && mnist_prob < 0.50f)) {
                 ambiguous = true;
                 ambig_reason = "置信偏低";
             }
         } else if (ctc_digit >= 0 && has_mnist) {
-            // CTC and MNIST-12 disagree
+            // CTC and MNIST-12 disagree: never override PP-OCRv5 silently without review
             if (mnist_digit == 1 && (ctc_is_one || ink.tall_thin_single_stroke) && mnist_prob >= 0.65f) {
                 final_val = 1.0;
                 has_val = true;
                 final_conf = mnist_prob;
-            } else if (ctc_conf >= 0.80f && min_margin >= 0.22f && mnist_prob < 0.78f) {
+            } else if (ctc_conf >= 0.82f && min_margin >= 0.25f && mnist_prob < 0.65f) {
                 final_val = static_cast<double>(ctc_digit);
                 has_val = true;
                 final_conf = ctc_conf;
                 is_standalone_zero = (ctc_digit == 0);
-                if (mnist_prob >= 0.55f) {
-                    ambiguous = true;
-                    ambig_reason = "数字待核";
-                }
-            } else if (mnist_prob >= 0.85f && (ctc_conf < 0.65f || min_margin < 0.12f)) {
+            } else if (ctc_conf >= 0.30f) {
+                final_val = static_cast<double>(ctc_digit);
+                has_val = true;
+                final_conf = ctc_conf;
+                is_standalone_zero = (ctc_digit == 0);
+                ambiguous = true;
+                ambig_reason = "数字待核";
+            } else if (mnist_prob >= 0.85f) {
                 final_val = static_cast<double>(mnist_digit);
                 has_val = true;
                 final_conf = mnist_prob;
                 is_standalone_zero = (mnist_digit == 0);
-                if (!(mnist_prob >= 0.92f && ctc_conf < 0.45f)) {
-                    ambiguous = true;
-                    ambig_reason = "数字待核";
-                }
+                ambiguous = true;
+                ambig_reason = "数字待核";
             } else {
                 int chosen = (mnist_prob > ctc_conf) ? mnist_digit : ctc_digit;
                 final_val = static_cast<double>(chosen);
@@ -1159,10 +1324,8 @@ void OcrEngine::recognize_digit_from_analysis(const CellInkAnalysis& ink, Worklo
             has_val = true;
             final_conf = mnist_prob;
             is_standalone_zero = (mnist_digit == 0);
-            if (mnist_prob < 0.88f) {
-                ambiguous = true;
-                ambig_reason = "置信偏低";
-            }
+            ambiguous = true;
+            ambig_reason = "置信偏低";
         }
     }
 

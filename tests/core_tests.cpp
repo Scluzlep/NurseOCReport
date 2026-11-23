@@ -576,6 +576,64 @@ void test_ocr_digits_decimals_headers_and_banner() {
     CHECK(sheet_fb.month == 11);
     CHECK(sheet_fb.rows.size() == 3);
 
+    // Regression test: curved open-top handwritten '4' whose descending right stem crosses
+    // the bottom horizontal border must not silently misread as unflagged '6'.
+    ImageRgb cross_img;
+    cross_img.width = W;
+    cross_img.height = H;
+    cross_img.data.assign(static_cast<size_t>(W) * H * 3, 250);
+    for (int y : ys) {
+        for (int yy = y - 1; yy <= y + 1; ++yy) {
+            for (int x = xs.front(); x <= xs.back(); ++x) {
+                uint8_t* p = &cross_img.data[(static_cast<size_t>(yy) * W + x) * 3];
+                p[0] = p[1] = p[2] = 25;
+            }
+        }
+    }
+    for (int x : xs) {
+        for (int y = ys.front(); y <= ys.back(); ++y) {
+            for (int xx = x - 1; xx <= x + 1; ++xx) {
+                uint8_t* p = &cross_img.data[(static_cast<size_t>(y) * W + xx) * 3];
+                p[0] = p[1] = p[2] = 25;
+            }
+        }
+    }
+    draw_text24(cross_img, 85, 290, {"张", "晓", "敏"}, 2);
+    draw_text24(cross_img, 85, 350, {"王", "静"}, 2);
+    {
+        auto draw_thick_seg = [&](int px0, int py0, int px1, int py1) {
+            int steps = std::max(std::abs(px1 - px0), std::abs(py1 - py0)) * 2 + 1;
+            for (int s = 0; s <= steps; ++s) {
+                float t = static_cast<float>(s) / steps;
+                int cx = static_cast<int>(std::round(px0 + (px1 - px0) * t));
+                int cy = static_cast<int>(std::round(py0 + (py1 - py0) * t));
+                for (int dy = -2; dy <= 2; ++dy) {
+                    for (int dx = -2; dx <= 2; ++dx) {
+                        int px = cx + dx, py = cy + dy;
+                        if (px >= 0 && px < W && py >= 0 && py < H) {
+                            uint8_t* p = &cross_img.data[(static_cast<size_t>(py) * W + px) * 3];
+                            p[0] = p[1] = p[2] = 28;
+                        }
+                    }
+                }
+            }
+        };
+        // Cell (row 2, col 1): xs=[260..370], ys=[276..336]
+        // Curved open-top left U-stroke + cross-border vertical tail descending to y=341
+        int mx = (xs[1] + xs[2]) / 2;
+        draw_thick_seg(mx - 10, 290, mx - 13, 308);
+        draw_thick_seg(mx - 13, 308, mx - 8, 323);
+        draw_thick_seg(mx - 8, 323, mx + 12, 322);
+        draw_thick_seg(mx + 6, 292, mx + 4, 341);
+    }
+    WorkloadSheet sheet_cross;
+    CHECK(engine.process_workload_photo(cross_img, 2026, 8, cfg, nullptr, sheet_cross, err));
+    CHECK(sheet_cross.rows.size() >= 1);
+    const auto& c4 = sheet_cross.rows[0].cells[0];
+    CHECK(c4.kind == ValueKind::Number);
+    CHECK(approx(c4.value, 4.0, 1e-4) || c4.status == ReviewStatus::NeedsReview);
+    CHECK(!(approx(c4.value, 6.0, 1e-4) && c4.status != ReviewStatus::NeedsReview));
+
     std::cout << "[PASS] test_ocr_digits_decimals_headers_and_banner\n";
 }
 

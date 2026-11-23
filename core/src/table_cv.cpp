@@ -1197,11 +1197,12 @@ RawCellStats extract_cell_diff(const RectifiedGrid& grid, int row, int col) {
     cell_w_est = right_x - left_x;
     cell_h_est = bot_y - top_y;
     int trim_x = (cell_w_est >= 28.0f) ? 4 : 2;
-    int trim_y = (cell_h_est >= 24.0f) ? 3 : 2;
+    int top_trim_y = (cell_h_est >= 24.0f) ? 3 : 2;
+    int bot_trim_y = 1;
     int x0 = std::max(0, static_cast<int>(std::round(left_x)) + trim_x);
     int x1 = std::min(g.width, static_cast<int>(std::round(right_x)) - trim_x);
-    int y0 = std::max(0, static_cast<int>(std::round(top_y)) + trim_y);
-    int y1 = std::min(g.height, static_cast<int>(std::round(bot_y)) - trim_y);
+    int y0 = std::max(0, static_cast<int>(std::round(top_y)) + top_trim_y);
+    int y1 = std::min(g.height, static_cast<int>(std::round(bot_y)) - bot_trim_y);
     if (x1 <= x0 + 4 || y1 <= y0 + 4) return st;
 
     st.w = x1 - x0;
@@ -1232,28 +1233,113 @@ RawCellStats extract_cell_diff(const RectifiedGrid& grid, int row, int col) {
         }
     }
 
-    // Clear residual border grid lines in outermost 2px if contiguous along edge
-    auto clear_edge_row = [&](int y) {
+    // Record columns belonging to a narrow interior descending vertical stroke just above bottom border
+    std::vector<uint8_t> bottom_stem_col(static_cast<size_t>(st.w), 0);
+    if (st.h >= 8) {
+        int cy_lo = std::max(1, st.h - 6);
+        int cy_hi = std::max(cy_lo, st.h - 4);
+        for (int y = cy_lo; y <= cy_hi; ++y) {
+            int dark = 0;
+            for (int x = 0; x < st.w; ++x) {
+                if (st.diff[static_cast<size_t>(y) * st.w + x] > 18.0f) ++dark;
+            }
+            if (dark >= static_cast<int>(st.w * 0.55f)) continue;
+            for (int x = 3; x < st.w - 3; ++x) {
+                if (st.diff[static_cast<size_t>(y) * st.w + x] > 20.0f) {
+                    bottom_stem_col[static_cast<size_t>(x)] = 1;
+                }
+            }
+        }
+        // Dilate stem mask by +-1px horizontally for slight slant across bottom border
+        std::vector<uint8_t> dilated = bottom_stem_col;
+        for (int x = 3; x < st.w - 3; ++x) {
+            if (bottom_stem_col[static_cast<size_t>(x)]) {
+                dilated[static_cast<size_t>(x - 1)] = 1;
+                dilated[static_cast<size_t>(x + 1)] = 1;
+            }
+        }
+        bottom_stem_col.swap(dilated);
+    }
+
+    // Clear residual border grid lines along outer edges while preserving crossing vertical stems at bottom
+    auto clear_edge_row = [&](int y, bool is_bottom) {
         int dark = 0;
-        for (int x = 0; x < st.w; ++x) if (st.diff[y * st.w + x] > 18.0f) ++dark;
+        for (int x = 0; x < st.w; ++x) if (st.diff[static_cast<size_t>(y) * st.w + x] > 18.0f) ++dark;
         if (dark >= static_cast<int>(st.w * 0.65f)) {
-            for (int x = 0; x < st.w; ++x) st.diff[y * st.w + x] = 0.0f;
+            for (int x = 0; x < st.w; ++x) {
+                if (is_bottom && bottom_stem_col[static_cast<size_t>(x)]) {
+                    continue;
+                }
+                st.diff[static_cast<size_t>(y) * st.w + x] = 0.0f;
+            }
         }
     };
     auto clear_edge_col = [&](int x) {
         int dark = 0;
-        for (int y = 0; y < st.h; ++y) if (st.diff[y * st.w + x] > 18.0f) ++dark;
+        for (int y = 0; y < st.h; ++y) if (st.diff[static_cast<size_t>(y) * st.w + x] > 18.0f) ++dark;
         if (dark >= static_cast<int>(st.h * 0.65f)) {
-            for (int y = 0; y < st.h; ++y) st.diff[y * st.w + x] = 0.0f;
+            for (int y = 0; y < st.h; ++y) st.diff[static_cast<size_t>(y) * st.w + x] = 0.0f;
         }
     };
-    for (int k = 0; k < std::min(3, st.h / 4); ++k) {
-        clear_edge_row(k);
-        clear_edge_row(st.h - 1 - k);
+    int top_edge_rows = std::min(3, st.h / 4);
+    for (int k = 0; k < top_edge_rows; ++k) {
+        clear_edge_row(k, false);
+        clear_edge_row(st.h - 1 - k, true);
     }
     for (int k = 0; k < std::min(3, st.w / 4); ++k) {
         clear_edge_col(k);
         clear_edge_col(st.w - 1 - k);
+    }
+
+    // Recover cross-border descending tail (e.g. lower stem of '4'/'7'/'9') below y1 along narrow stem
+    if (st.h >= 6 && y1 < g.height) {
+        int tail_y = st.h - 1;
+        int stem_x0 = st.w, stem_x1 = -1;
+        int best_span_w = 0;
+        for (int x = 4; x < st.w - 4;) {
+            bool active = bottom_stem_col[static_cast<size_t>(x)] &&
+                          (st.diff[static_cast<size_t>(tail_y) * st.w + x] > 20.0f ||
+                           st.diff[static_cast<size_t>(tail_y - 1) * st.w + x] > 20.0f);
+            if (!active) {
+                ++x;
+                continue;
+            }
+            int rx = x;
+            while (rx < st.w - 4 &&
+                   bottom_stem_col[static_cast<size_t>(rx)] &&
+                   (st.diff[static_cast<size_t>(tail_y) * st.w + rx] > 18.0f ||
+                    st.diff[static_cast<size_t>(tail_y - 1) * st.w + rx] > 18.0f)) {
+                ++rx;
+            }
+            int span_w = rx - x;
+            if (span_w >= 1 && span_w <= 10 && span_w > best_span_w) {
+                best_span_w = span_w;
+                stem_x0 = x;
+                stem_x1 = rx - 1;
+            }
+            x = rx;
+        }
+        if (stem_x1 >= stem_x0) {
+            int max_extra = std::min(6, g.height - y1);
+            int sx0 = std::max(3, stem_x0 - 2);
+            int sx1 = std::min(st.w - 4, stem_x1 + 2);
+            for (int dy = 0; dy < max_extra; ++dy) {
+                int ey = y1 + dy;
+                const uint8_t* rp = &g.data[static_cast<size_t>(ey) * g.width + x0];
+                std::vector<float> extra_row(static_cast<size_t>(st.w), 0.0f);
+                bool any_stem_px = false;
+                for (int x = sx0; x <= sx1; ++x) {
+                    float d = std::max(0.0f, st.bg - static_cast<float>(rp[x]));
+                    if (d > 18.0f) {
+                        extra_row[static_cast<size_t>(x)] = d;
+                        any_stem_px = true;
+                    }
+                }
+                if (!any_stem_px) break;
+                st.diff.insert(st.diff.end(), extra_row.begin(), extra_row.end());
+                ++st.h;
+            }
+        }
     }
 
     // Remove border grid line components and neighbor bleed strokes dangling from top border
