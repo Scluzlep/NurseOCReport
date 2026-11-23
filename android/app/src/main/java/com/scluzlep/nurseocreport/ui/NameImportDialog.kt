@@ -2,7 +2,6 @@ package com.scluzlep.nurseocreport.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
@@ -17,11 +16,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import com.scluzlep.nurseocreport.AppState
-import top.yukonga.miuix.kmp.basic.Button
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.extra.SuperDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -86,49 +82,34 @@ fun NameImportDialog(
                 overflow = TextOverflow.Ellipsis,
             )
 
-            Button(
+            UniformDialogButton(
+                text = "确认导入粘贴名单（${parsedNames.size}人）",
                 onClick = {
                     state.importNamesList(parsedNames, targetWorkloadOnly = targetWorkloadOnly)
                     onDismiss()
                 },
                 enabled = parsedNames.isNotEmpty() && !state.busy,
-                colors = ButtonDefaults.buttonColorsPrimary(),
+                primary = true,
                 modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    text = "确认导入粘贴名单（${parsedNames.size}人）",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
 
-            Button(
+            UniformDialogButton(
+                text = "从文件导入 (.txt/.csv/.docx/.xlsx)",
                 onClick = {
                     onDismiss()
                     onPickFile()
                 },
                 enabled = !state.busy,
                 modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    text = "从文件导入 (.txt/.csv/.docx/.xlsx)",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            )
 
-            Row(
+            UniformDialogButton(
+                text = "取消",
+                onClick = onDismiss,
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-            ) {
-                TextButton(
-                    text = "取消",
-                    onClick = onDismiss,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
+            )
         }
     }
 }

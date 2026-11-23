@@ -68,16 +68,15 @@ import com.scluzlep.nurseocreport.formatNumber2dp
 import com.scluzlep.nurseocreport.formatNumberTrim
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Button
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Surface
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.extra.SuperDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import java.util.Locale
 import kotlin.math.hypot
 import kotlin.math.min
 
@@ -93,15 +92,13 @@ fun WorkloadTab(
     var showCustomInputDialog by remember { mutableStateOf(false) }
     var showDeleteRowConfirm by remember { mutableStateOf(false) }
     var showAddRowDialog by remember { mutableStateOf(false) }
-    var yearStr by remember(state.year) { mutableStateOf(state.year.toString()) }
-    var monthStr by remember(state.month) { mutableStateOf(state.month.toString()) }
+    var showYearMonthDialog by remember { mutableStateOf(false) }
 
     val currentSheet = state.sheet
     val currentSummary = state.summary
     val selRow = state.selectedRow
     val selCol = state.selectedColIndex
-
-    val compactBtnMargin = PaddingValues(horizontal = 11.dp, vertical = 7.dp)
+    val hasSelectedRow = currentSheet != null && selRow in currentSheet.rows.indices
 
     Column(
         modifier = Modifier
@@ -109,156 +106,163 @@ fun WorkloadTab(
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Button(
-                onClick = onTakePhoto,
-                enabled = !state.busy,
-                colors = ButtonDefaults.buttonColorsPrimary(),
-                insideMargin = compactBtnMargin,
-                minHeight = 34.dp,
-            ) {
-                Text("拍照识别", style = MiuixTheme.textStyles.body2, maxLines = 1)
-            }
-            Button(
-                onClick = onPickPhoto,
-                enabled = !state.busy,
-                insideMargin = compactBtnMargin,
-                minHeight = 34.dp,
-            ) {
-                Text("相册选图", style = MiuixTheme.textStyles.body2, maxLines = 1)
-            }
-            Button(
-                onClick = { state.rotateWorkload(3) },
-                enabled = !state.busy && currentSheet != null && state.workingBitmap != null,
-                insideMargin = compactBtnMargin,
-                minHeight = 34.dp,
-            ) {
-                Text("左转", style = MiuixTheme.textStyles.body2, maxLines = 1)
-            }
-            Button(
-                onClick = { state.rotateWorkload(1) },
-                enabled = !state.busy && currentSheet != null && state.workingBitmap != null,
-                insideMargin = compactBtnMargin,
-                minHeight = 34.dp,
-            ) {
-                Text("右转", style = MiuixTheme.textStyles.body2, maxLines = 1)
-            }
-            Button(
-                onClick = { state.toggleCornerEditMode() },
-                enabled = !state.busy && currentSheet != null && state.workingBitmap != null,
-                insideMargin = compactBtnMargin,
-                minHeight = 34.dp,
-            ) {
-                Text(
-                    if (state.cornerEditMode) "取消框选" else "四角微调",
-                    style = MiuixTheme.textStyles.body2,
-                    maxLines = 1,
-                )
-            }
-            if (state.cornerEditMode) {
-                Button(
-                    onClick = { state.applyAdjustedCorners() },
-                    enabled = !state.busy,
-                    colors = ButtonDefaults.buttonColorsPrimary(),
-                    insideMargin = compactBtnMargin,
-                    minHeight = 34.dp,
-                ) {
-                    Text("按新框重算", style = MiuixTheme.textStyles.body2, maxLines = 1)
-                }
-            }
-            Button(
-                onClick = onImportNames,
-                enabled = !state.busy && currentSheet != null,
-                insideMargin = compactBtnMargin,
-                minHeight = 34.dp,
-            ) {
-                Text("导入名单", style = MiuixTheme.textStyles.body2, maxLines = 1)
-            }
-            Button(
-                onClick = { showAddRowDialog = true },
-                enabled = !state.busy,
-                insideMargin = compactBtnMargin,
-                minHeight = 34.dp,
-            ) {
-                Text("新增一行", style = MiuixTheme.textStyles.body2, maxLines = 1)
-            }
-            Button(
-                onClick = { showDeleteRowConfirm = true },
-                enabled = !state.busy && currentSheet != null && selRow in currentSheet.rows.indices,
-                colors = ButtonDefaults.buttonColors(
-                    color = MiuixTheme.colorScheme.errorContainer,
-                    contentColor = MiuixTheme.colorScheme.error,
-                ),
-                insideMargin = compactBtnMargin,
-                minHeight = 34.dp,
-            ) {
-                Text("删除当前行", style = MiuixTheme.textStyles.body2, maxLines = 1)
-            }
-            Button(
-                onClick = { state.exportAndShareXlsx() },
-                enabled = !state.busy && currentSheet != null && currentSheet.rows.isNotEmpty(),
-                colors = ButtonDefaults.buttonColorsPrimary(),
-                insideMargin = compactBtnMargin,
-                minHeight = 34.dp,
-            ) {
-                Text("导出分享", style = MiuixTheme.textStyles.body2, maxLines = 1)
-            }
-        }
+        ToolbarGridRow(
+            slotCount = 4,
+            content = listOf(
+                {
+                    UniformToolbarButton(
+                        text = "拍照识别",
+                        onClick = onTakePhoto,
+                        enabled = !state.busy,
+                        primary = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+                {
+                    UniformToolbarButton(
+                        text = "相册选图",
+                        onClick = onPickPhoto,
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+                {
+                    UniformToolbarButton(
+                        text = "导入名单",
+                        onClick = onImportNames,
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+                {
+                    UniformToolbarButton(
+                        text = "导出分享",
+                        onClick = { state.exportAndShareXlsx() },
+                        enabled = !state.busy && currentSheet != null && currentSheet.rows.isNotEmpty(),
+                        primary = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+            ),
+        )
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TextField(
-                value = yearStr,
-                onValueChange = { txt ->
-                    yearStr = txt
-                    txt.toIntOrNull()?.let { y -> if (y in 2000..2100) state.year = y }
+        ToolbarGridRow(
+            slotCount = 4,
+            content = listOf(
+                {
+                    UniformToolbarButton(
+                        text = "向左旋转",
+                        onClick = { state.rotateWorkload(3) },
+                        enabled = !state.busy && currentSheet != null && state.workingBitmap != null,
+                        modifier = Modifier.weight(1f),
+                    )
                 },
-                label = "年",
-                insideMargin = DpSize(10.dp, 10.dp),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true,
-                modifier = Modifier.width(86.dp),
-            )
-            TextField(
-                value = monthStr,
-                onValueChange = { txt ->
-                    monthStr = txt
-                    txt.toIntOrNull()?.let { m -> if (m in 1..12) state.month = m }
+                {
+                    UniformToolbarButton(
+                        text = "向右旋转",
+                        onClick = { state.rotateWorkload(1) },
+                        enabled = !state.busy && currentSheet != null && state.workingBitmap != null,
+                        modifier = Modifier.weight(1f),
+                    )
                 },
-                label = "月",
-                insideMargin = DpSize(10.dp, 10.dp),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true,
-                modifier = Modifier.width(68.dp),
+                {
+                    UniformToolbarButton(
+                        text = "新增一行",
+                        onClick = { showAddRowDialog = true },
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+                {
+                    UniformToolbarButton(
+                        text = "删除本行",
+                        onClick = { if (hasSelectedRow) showDeleteRowConfirm = true },
+                        enabled = !state.busy && hasSelectedRow,
+                        danger = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+            ),
+        )
+
+        if (state.cornerEditMode) {
+            ToolbarGridRow(
+                slotCount = 4,
+                content = listOf(
+                    {
+                        UniformToolbarButton(
+                            text = "按框重算",
+                            onClick = { state.applyAdjustedCorners() },
+                            enabled = !state.busy,
+                            primary = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                    },
+                    {
+                        UniformToolbarButton(
+                            text = "取消微调",
+                            onClick = { state.toggleCornerEditMode() },
+                            enabled = !state.busy && currentSheet != null && state.workingBitmap != null,
+                            modifier = Modifier.weight(1f),
+                        )
+                    },
+                    {
+                        UniformToolbarButton(
+                            text = "下一待核",
+                            onClick = { state.selectNextPendingReview() },
+                            enabled = currentSheet != null && currentSheet.rows.isNotEmpty(),
+                            modifier = Modifier.weight(1f),
+                        )
+                    },
+                    {
+                        UniformToolbarButton(
+                            text = if (showWeekDetail) "汇总表格" else "周明细表",
+                            onClick = { showWeekDetail = !showWeekDetail },
+                            enabled = currentSheet != null,
+                            modifier = Modifier.weight(1f),
+                        )
+                    },
+                ),
             )
-            Button(
-                onClick = { state.selectNextPendingReview() },
-                enabled = currentSheet != null && currentSheet.rows.isNotEmpty(),
-                insideMargin = compactBtnMargin,
-                minHeight = 38.dp,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("下一处待确认", style = MiuixTheme.textStyles.body2, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            Button(
-                onClick = { showWeekDetail = !showWeekDetail },
-                enabled = currentSheet != null,
-                insideMargin = compactBtnMargin,
-                minHeight = 38.dp,
-            ) {
-                Text(
-                    if (showWeekDetail) "汇总视图" else "周明细",
-                    style = MiuixTheme.textStyles.body2,
-                    maxLines = 1,
-                )
-            }
+        } else {
+            val dateLabel = String.format(Locale.US, "%04d.%02d", state.year, state.month)
+            ToolbarGridRow(
+                slotCount = 4,
+                content = listOf(
+                    {
+                        UniformToolbarButton(
+                            text = dateLabel,
+                            onClick = { showYearMonthDialog = true },
+                            enabled = !state.busy,
+                            modifier = Modifier.weight(1f),
+                        )
+                    },
+                    {
+                        UniformToolbarButton(
+                            text = "四角微调",
+                            onClick = { state.toggleCornerEditMode() },
+                            enabled = !state.busy && currentSheet != null && state.workingBitmap != null,
+                            modifier = Modifier.weight(1f),
+                        )
+                    },
+                    {
+                        UniformToolbarButton(
+                            text = "下一待核",
+                            onClick = { state.selectNextPendingReview() },
+                            enabled = currentSheet != null && currentSheet.rows.isNotEmpty(),
+                            modifier = Modifier.weight(1f),
+                        )
+                    },
+                    {
+                        UniformToolbarButton(
+                            text = if (showWeekDetail) "汇总表格" else "周明细表",
+                            onClick = { showWeekDetail = !showWeekDetail },
+                            enabled = currentSheet != null,
+                            modifier = Modifier.weight(1f),
+                        )
+                    },
+                ),
+            )
         }
 
         // Photo preview & auto-zoom cell highlight canvas
@@ -277,7 +281,7 @@ fun WorkloadTab(
             }
         }
 
-        // Enlarged cell crop preview + quick-fill bar
+        // Enlarged cell crop preview + uniform 2x5 quick-fill bar
         if (currentSheet != null && selRow in currentSheet.rows.indices) {
             val rowObj = currentSheet.rows[selRow]
             val titleLabel = if (selCol < 0) {
@@ -350,72 +354,127 @@ fun WorkloadTab(
                                 )
                             }
                         }
-                        Button(
-                            onClick = { showCustomInputDialog = true },
-                            insideMargin = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                            minWidth = 52.dp,
-                            minHeight = 32.dp,
-                        ) {
-                            Text(if (selCol < 0) "改名" else "手输", style = MiuixTheme.textStyles.footnote1, maxLines = 1)
-                        }
                     }
 
                     if (selCol >= 0) {
-                        val quickBtnMargin = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Button(
-                                onClick = {
-                                    state.editCell(selRow, selCol, true, 0.0, null, advanceAfterEdit = true)
+                        ToolbarGridRow(
+                            slotCount = 5,
+                            content = listOf(
+                                {
+                                    UniformQuickButton(
+                                        text = "空白",
+                                        onClick = {
+                                            state.editCell(selRow, selCol, true, 0.0, null, advanceAfterEdit = true)
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    )
                                 },
-                                insideMargin = quickBtnMargin,
-                                minWidth = 44.dp,
-                                minHeight = 32.dp,
-                            ) {
-                                Text("空白", style = MiuixTheme.textStyles.body2, maxLines = 1)
-                            }
-                            listOf("1" to 1.0, "2" to 2.0, "3" to 3.0, "4" to 4.0, "5" to 5.0, "0.5" to 0.5).forEach { (label, num) ->
-                                Button(
-                                    onClick = {
-                                        state.editCell(selRow, selCol, false, num, null, advanceAfterEdit = true)
-                                    },
-                                    insideMargin = quickBtnMargin,
-                                    minWidth = 38.dp,
-                                    minHeight = 32.dp,
-                                ) {
-                                    Text(label, style = MiuixTheme.textStyles.body2, maxLines = 1)
-                                }
-                            }
-                            Button(
-                                onClick = { state.confirmAndAdvance() },
-                                colors = ButtonDefaults.buttonColorsPrimary(),
-                                insideMargin = quickBtnMargin,
-                                minWidth = 50.dp,
-                                minHeight = 32.dp,
-                            ) {
-                                Text("确认", style = MiuixTheme.textStyles.body2, maxLines = 1)
-                            }
-                        }
+                                {
+                                    UniformQuickButton(
+                                        text = "1",
+                                        onClick = {
+                                            state.editCell(selRow, selCol, false, 1.0, null, advanceAfterEdit = true)
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                },
+                                {
+                                    UniformQuickButton(
+                                        text = "2",
+                                        onClick = {
+                                            state.editCell(selRow, selCol, false, 2.0, null, advanceAfterEdit = true)
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                },
+                                {
+                                    UniformQuickButton(
+                                        text = "3",
+                                        onClick = {
+                                            state.editCell(selRow, selCol, false, 3.0, null, advanceAfterEdit = true)
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                },
+                                {
+                                    UniformQuickButton(
+                                        text = "4",
+                                        onClick = {
+                                            state.editCell(selRow, selCol, false, 4.0, null, advanceAfterEdit = true)
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                },
+                            ),
+                        )
+                        ToolbarGridRow(
+                            slotCount = 5,
+                            content = listOf(
+                                {
+                                    UniformQuickButton(
+                                        text = "5",
+                                        onClick = {
+                                            state.editCell(selRow, selCol, false, 5.0, null, advanceAfterEdit = true)
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                },
+                                {
+                                    UniformQuickButton(
+                                        text = "6",
+                                        onClick = {
+                                            state.editCell(selRow, selCol, false, 6.0, null, advanceAfterEdit = true)
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                },
+                                {
+                                    UniformQuickButton(
+                                        text = "0.5",
+                                        onClick = {
+                                            state.editCell(selRow, selCol, false, 0.5, null, advanceAfterEdit = true)
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                },
+                                {
+                                    UniformQuickButton(
+                                        text = "手输",
+                                        onClick = { showCustomInputDialog = true },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                },
+                                {
+                                    UniformQuickButton(
+                                        text = "确认",
+                                        primary = true,
+                                        onClick = { state.confirmAndAdvance() },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                },
+                            ),
+                        )
                     } else {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { showCustomInputDialog = true },
-                                insideMargin = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                                minHeight = 34.dp,
-                            ) {
-                                Text("修改姓名", style = MiuixTheme.textStyles.body2, maxLines = 1)
-                            }
-                            Button(
-                                onClick = { state.confirmAndAdvance() },
-                                colors = ButtonDefaults.buttonColorsPrimary(),
-                                insideMargin = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                                minHeight = 34.dp,
-                            ) {
-                                Text("确认", style = MiuixTheme.textStyles.body2, maxLines = 1)
-                            }
-                        }
+                        ToolbarGridRow(
+                            slotCount = 2,
+                            content = listOf(
+                                {
+                                    UniformQuickButton(
+                                        text = "修改姓名",
+                                        onClick = { showCustomInputDialog = true },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                },
+                                {
+                                    UniformQuickButton(
+                                        text = "确认",
+                                        primary = true,
+                                        onClick = { state.confirmAndAdvance() },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                },
+                            ),
+                        )
                     }
                 }
             }
@@ -436,7 +495,7 @@ fun WorkloadTab(
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = "请先拍照或从相册选择整月工作量表照片，也可点击“新增一行”手动建表。",
+                        text = "请先拍照或从相册选择整月工作量表照片，也可点击“导入名单”或“新增一行”手动建表。",
                         style = MiuixTheme.textStyles.body2,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
@@ -458,94 +517,103 @@ fun WorkloadTab(
                 WeeklyDetailSection(
                     state = state,
                     sheet = currentSheet,
+                    onSelectOrEditName = { rowIdx ->
+                        if (state.selectedRow == rowIdx && state.selectedColIndex == -1) {
+                            showCustomInputDialog = true
+                        } else {
+                            state.selectCell(rowIdx, -1)
+                        }
+                    },
                 )
             }
         }
     }
 
-    // Manual value / name input SuperDialog (supports 6-9, decimals like 1.5, or editing name)
-    if (currentSheet != null && selRow in currentSheet.rows.indices) {
-        val rowObj = currentSheet.rows[selRow]
-        val isName = selCol < 0
-        val initVal = if (isName) {
-            rowObj.staffName
-        } else if (selCol in rowObj.cells.indices && !rowObj.cells[selCol].isBlank) {
-            formatNumberTrim(rowObj.cells[selCol].value)
-        } else {
-            ""
+    // All 4 SuperDialogs hoisted to top-level scope so state changes never tear down active dialogs mid-dismiss.
+    val activeRowObj = currentSheet?.rows?.getOrNull(selRow)
+    val isNameEdit = selCol < 0
+    val initInputVal = if (activeRowObj == null) {
+        ""
+    } else if (isNameEdit) {
+        activeRowObj.staffName
+    } else if (selCol in activeRowObj.cells.indices && !activeRowObj.cells[selCol].isBlank) {
+        formatNumberTrim(activeRowObj.cells[selCol].value)
+    } else {
+        ""
+    }
+    var customInputText by remember { mutableStateOf(initInputVal) }
+    LaunchedEffect(showCustomInputDialog, selRow, selCol) {
+        if (showCustomInputDialog) {
+            customInputText = initInputVal
         }
-        var inputText by remember { mutableStateOf(initVal) }
-        LaunchedEffect(showCustomInputDialog, selRow, selCol) {
-            if (showCustomInputDialog) {
-                inputText = initVal
-            }
-        }
+    }
 
-        SuperDialog(
-            show = showCustomInputDialog,
-            title = if (isName) "修改姓名" else "手动输入数值",
-            summary = if (isName) "第 ${selRow + 1} 行姓名" else "支持 6~9 或小数（如 1.5），留空保存为空白",
-            onDismissRequest = { showCustomInputDialog = false },
+    SuperDialog(
+        show = showCustomInputDialog && activeRowObj != null,
+        title = if (isNameEdit) "修改姓名" else "手动输入数值",
+        summary = if (isNameEdit) "第 ${selRow + 1} 行姓名" else "支持 0~9、两位数或小数（如 1.5），留空保存为空白",
+        onDismissRequest = { showCustomInputDialog = false },
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Column(
+            TextField(
+                value = customInputText,
+                onValueChange = { customInputText = it },
+                label = if (isNameEdit) "姓名" else "数值",
+                insideMargin = DpSize(10.dp, 12.dp),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = if (isNameEdit) KeyboardType.Text else KeyboardType.Decimal,
+                ),
+                singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                TextField(
-                    value = inputText,
-                    onValueChange = { inputText = it },
-                    label = if (isName) "姓名" else "数值",
-                    insideMargin = DpSize(10.dp, 12.dp),
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = if (isName) KeyboardType.Text else KeyboardType.Decimal,
-                    ),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+            )
 
-                if (!isName) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        listOf("6", "7", "8", "9", "1.5", "2.5").forEach { preset ->
-                            Button(
-                                onClick = { inputText = preset },
-                                insideMargin = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                minWidth = 42.dp,
-                                minHeight = 32.dp,
-                            ) {
-                                Text(preset, style = MiuixTheme.textStyles.body2, maxLines = 1)
-                            }
+            if (!isNameEdit) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    listOf("7", "8", "9", "0.5", "1.5", "2.5").forEach { preset ->
+                        Button(
+                            onClick = { customInputText = preset },
+                            insideMargin = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            minWidth = 42.dp,
+                            minHeight = 32.dp,
+                        ) {
+                            Text(preset, style = MiuixTheme.textStyles.body2, maxLines = 1)
                         }
                     }
                 }
+            }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    TextButton(
-                        text = "取消",
-                        onClick = { showCustomInputDialog = false },
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(
-                        text = "保存",
-                        colors = ButtonDefaults.textButtonColorsPrimary(),
-                        enabled = if (isName) {
-                            inputText.isNotBlank()
-                        } else {
-                            inputText.trim().isEmpty() || inputText.trim().toDoubleOrNull()?.let { it >= 0.0 } == true
-                        },
-                        onClick = {
-                            if (isName) {
-                                if (inputText.isNotBlank()) {
-                                    state.editCell(selRow, -1, false, 0.0, inputText.trim(), advanceAfterEdit = false)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                UniformDialogButton(
+                    text = "取消",
+                    onClick = { showCustomInputDialog = false },
+                    modifier = Modifier.weight(1f),
+                )
+                UniformDialogButton(
+                    text = "保存",
+                    primary = true,
+                    enabled = activeRowObj != null && if (isNameEdit) {
+                        customInputText.isNotBlank()
+                    } else {
+                        customInputText.trim().isEmpty() || customInputText.trim().toDoubleOrNull()?.let { it >= 0.0 } == true
+                    },
+                    onClick = {
+                        if (activeRowObj != null) {
+                            if (isNameEdit) {
+                                if (customInputText.isNotBlank()) {
+                                    state.editCell(selRow, -1, false, 0.0, customInputText.trim(), advanceAfterEdit = false)
                                 }
                                 showCustomInputDialog = false
                             } else {
-                                val trimmed = inputText.trim()
+                                val trimmed = customInputText.trim()
                                 if (trimmed.isEmpty()) {
                                     state.editCell(selRow, selCol, true, 0.0, null, advanceAfterEdit = true)
                                     showCustomInputDialog = false
@@ -556,47 +624,43 @@ fun WorkloadTab(
                                     }
                                 }
                             }
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-        }
-
-        // Confirm delete current row SuperDialog
-        SuperDialog(
-            show = showDeleteRowConfirm,
-            title = "删除当前行",
-            summary = "确定要删除第 ${selRow + 1} 行（${rowObj.staffName}）吗？删除后将重新编号并汇总计算。",
-            onDismissRequest = { showDeleteRowConfirm = false },
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                TextButton(
-                    text = "取消",
-                    onClick = { showDeleteRowConfirm = false },
+                        }
+                    },
                     modifier = Modifier.weight(1f),
                 )
-                Button(
-                    onClick = {
-                        state.deleteWorkloadRow(selRow)
-                        showDeleteRowConfirm = false
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        color = MiuixTheme.colorScheme.errorContainer,
-                        contentColor = MiuixTheme.colorScheme.error,
-                    ),
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("确认删除", maxLines = 1)
-                }
             }
         }
     }
 
-    // Add workload row SuperDialog
+    SuperDialog(
+        show = showDeleteRowConfirm && activeRowObj != null,
+        title = "删除当前行",
+        summary = "确定要删除第 ${selRow + 1} 行（${activeRowObj?.staffName.orEmpty()}）吗？删除后将重新编号并汇总计算。",
+        onDismissRequest = { showDeleteRowConfirm = false },
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            UniformDialogButton(
+                text = "取消",
+                onClick = { showDeleteRowConfirm = false },
+                modifier = Modifier.weight(1f),
+            )
+            UniformDialogButton(
+                text = "确认删除",
+                danger = true,
+                onClick = {
+                    if (activeRowObj != null) {
+                        state.deleteWorkloadRow(selRow)
+                    }
+                    showDeleteRowConfirm = false
+                },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+
     var newRowName by remember { mutableStateOf("") }
     LaunchedEffect(showAddRowDialog) {
         if (showAddRowDialog) {
@@ -643,7 +707,7 @@ fun WorkloadTab(
                         Button(
                             onClick = { newRowName = candidate },
                             insideMargin = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                            minHeight = 30.dp,
+                            minHeight = 32.dp,
                         ) {
                             Text(candidate, style = MiuixTheme.textStyles.footnote1, maxLines = 1)
                         }
@@ -655,18 +719,80 @@ fun WorkloadTab(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                TextButton(
+                UniformDialogButton(
                     text = "取消",
                     onClick = { showAddRowDialog = false },
                     modifier = Modifier.weight(1f),
                 )
-                TextButton(
+                UniformDialogButton(
                     text = "确定",
-                    colors = ButtonDefaults.textButtonColorsPrimary(),
+                    primary = true,
                     enabled = newRowName.isNotBlank(),
                     onClick = {
                         state.addWorkloadRow(newRowName)
                         showAddRowDialog = false
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+
+    var editYearStr by remember { mutableStateOf(state.year.toString()) }
+    var editMonthStr by remember { mutableStateOf(state.month.toString()) }
+    LaunchedEffect(showYearMonthDialog) {
+        if (showYearMonthDialog) {
+            editYearStr = state.year.toString()
+            editMonthStr = state.month.toString()
+        }
+    }
+
+    SuperDialog(
+        show = showYearMonthDialog,
+        title = "设置统计年月",
+        summary = "识别照片时会自动更新此处年月，也可手动调整",
+        onDismissRequest = { showYearMonthDialog = false },
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            TextField(
+                value = editYearStr,
+                onValueChange = { editYearStr = it },
+                label = "年份（2000~2099）",
+                insideMargin = DpSize(10.dp, 12.dp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TextField(
+                value = editMonthStr,
+                onValueChange = { editMonthStr = it },
+                label = "月份（1~12）",
+                insideMargin = DpSize(10.dp, 12.dp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                UniformDialogButton(
+                    text = "取消",
+                    onClick = { showYearMonthDialog = false },
+                    modifier = Modifier.weight(1f),
+                )
+                UniformDialogButton(
+                    text = "确定",
+                    primary = true,
+                    enabled = (editYearStr.trim().toIntOrNull() in 2000..2099) &&
+                        (editMonthStr.trim().toIntOrNull() in 1..12),
+                    onClick = {
+                        editYearStr.trim().toIntOrNull()?.let { y -> if (y in 2000..2099) state.year = y }
+                        editMonthStr.trim().toIntOrNull()?.let { m -> if (m in 1..12) state.month = m }
+                        showYearMonthDialog = false
                     },
                     modifier = Modifier.weight(1f),
                 )
@@ -702,7 +828,6 @@ private fun InteractiveWorkloadCanvas(
         Triple(fs, px, py)
     }
 
-    // Fit full image when bitmap or canvas size initializes, or when entering corner edit mode
     LaunchedEffect(bitmap, canvasSize, state.cornerEditMode) {
         if (canvasSize.width > 1 && canvasSize.height > 1) {
             if (state.cornerEditMode || state.selectedRow !in sheet.rows.indices) {
@@ -714,7 +839,6 @@ private fun InteractiveWorkloadCanvas(
         }
     }
 
-    // Smoothly auto-zoom (~3.2f) and pan onto selected cell quad
     LaunchedEffect(state.selectedRow, state.selectedColIndex, canvasSize, state.cornerEditMode) {
         if (canvasSize.width <= 1 || canvasSize.height <= 1 || state.cornerEditMode) return@LaunchedEffect
         val r = state.selectedRow
@@ -1039,6 +1163,7 @@ private fun SummaryTableSection(
 private fun WeeklyDetailSection(
     state: AppState,
     sheet: WorkloadSheetUi,
+    onSelectOrEditName: (Int) -> Unit,
 ) {
     val isDark = isSystemInDarkTheme()
     val headerBg = if (isDark) Color(0xFF1F3247) else Color(0xFFEAF2FF)
@@ -1080,7 +1205,7 @@ private fun WeeklyDetailSection(
                         text = row.staffName,
                         modifier = Modifier
                             .width(80.dp)
-                            .clickable { state.selectCell(rIdx, -1) },
+                            .clickable { onSelectOrEditName(rIdx) },
                         style = MiuixTheme.textStyles.body2,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,

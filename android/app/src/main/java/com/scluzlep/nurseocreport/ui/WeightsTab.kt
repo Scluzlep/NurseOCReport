@@ -31,13 +31,10 @@ import androidx.compose.ui.unit.dp
 import com.scluzlep.nurseocreport.AppState
 import com.scluzlep.nurseocreport.ShiftRuleUi
 import com.scluzlep.nurseocreport.formatNumberTrim
-import top.yukonga.miuix.kmp.basic.Button
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.extra.SuperDialog
 import top.yukonga.miuix.kmp.extra.SuperSwitch
@@ -82,24 +79,26 @@ fun WeightsTab(state: AppState) {
             )
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Button(
-                onClick = { showAddDialog = true },
-                colors = ButtonDefaults.buttonColorsPrimary(),
-                insideMargin = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-            ) {
-                Text("新增班次", maxLines = 1)
-            }
-            Button(
-                onClick = { state.resetDefaultShiftRules() },
-                insideMargin = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-            ) {
-                Text("恢复默认", maxLines = 1)
-            }
-        }
+        ToolbarGridRow(
+            slotCount = 4,
+            content = listOf(
+                {
+                    UniformToolbarButton(
+                        text = "新增班次",
+                        onClick = { showAddDialog = true },
+                        primary = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+                {
+                    UniformToolbarButton(
+                        text = "恢复默认",
+                        onClick = { state.resetDefaultShiftRules() },
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+            ),
+        )
 
         Text(
             text = "班次权重规则（点击卡片可修改名称、权重或删除）",
@@ -315,26 +314,22 @@ private fun ShiftRuleEditDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (onDelete != null) {
-                    Button(
+                    UniformDialogButton(
+                        text = "删除",
                         onClick = onDelete,
-                        colors = ButtonDefaults.buttonColors(
-                            color = MiuixTheme.colorScheme.errorContainer,
-                            contentColor = MiuixTheme.colorScheme.error,
-                        ),
+                        danger = true,
                         modifier = Modifier.weight(1f),
-                    ) {
-                        Text("删除", maxLines = 1)
-                    }
+                    )
                 }
-                TextButton(
+                UniformDialogButton(
                     text = "取消",
                     onClick = onDismiss,
                     modifier = Modifier.weight(1f),
                 )
-                TextButton(
+                UniformDialogButton(
                     text = if (isEdit) "保存" else "确定",
+                    primary = true,
                     enabled = name.isNotBlank() && (weightStr.toDoubleOrNull()?.let { it >= 0.0 } == true),
-                    colors = ButtonDefaults.textButtonColorsPrimary(),
                     onClick = {
                         val w = weightStr.toDoubleOrNull() ?: 1.0
                         onSave(

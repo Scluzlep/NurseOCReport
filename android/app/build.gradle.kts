@@ -4,8 +4,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val propVersionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 200
-val propVersionName = (project.findProperty("versionName") as String?) ?: "0.2.0"
+val propVersionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 201
+val propVersionName = (project.findProperty("versionName") as String?) ?: "0.2.1"
 
 android {
     namespace = "com.scluzlep.nurseocreport"
@@ -32,6 +32,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            ndk {
+                abiFilters += listOf("x86_64")
+            }
+        }
         release {
             isMinifyEnabled = false
             isShrinkResources = false
@@ -78,7 +83,7 @@ kotlin {
 
 dependencies {
     implementation("top.yukonga.miuix.kmp:miuix-android:0.8.8")
-    implementation("androidx.activity:activity-compose:1.10.1")
+    implementation("androidx.activity:activity-compose:1.12.4")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")

@@ -4,8 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.defaultMinSize
@@ -35,17 +33,13 @@ import com.scluzlep.nurseocreport.AppState
 import com.scluzlep.nurseocreport.StaffEntryUi
 import com.scluzlep.nurseocreport.formatNumber2dp
 import com.scluzlep.nurseocreport.formatNumberTrim
-import top.yukonga.miuix.kmp.basic.Button
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.extra.SuperDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun StaffTab(
     state: AppState,
@@ -61,54 +55,61 @@ fun StaffTab(
         modifier = Modifier
             .fillMaxSize()
             .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Button(
-                onClick = onTakeCoeffPhoto,
-                enabled = !state.busy,
-                colors = ButtonDefaults.buttonColorsPrimary(),
-                insideMargin = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-            ) {
-                Text("拍照识别", maxLines = 1)
-            }
-            Button(
-                onClick = onPickCoeffPhoto,
-                enabled = !state.busy,
-                insideMargin = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-            ) {
-                Text("相册选图", maxLines = 1)
-            }
-            Button(
-                onClick = onImportNames,
-                enabled = !state.busy,
-                insideMargin = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-            ) {
-                Text("导入名单", maxLines = 1)
-            }
-            Button(
-                onClick = { showAddDialog = true },
-                enabled = !state.busy,
-                insideMargin = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-            ) {
-                Text("新增人员", maxLines = 1)
-            }
-            Button(
-                onClick = { showClearConfirm = true },
-                enabled = !state.busy && state.staffList.isNotEmpty(),
-                colors = ButtonDefaults.buttonColors(
-                    color = MiuixTheme.colorScheme.errorContainer,
-                    contentColor = MiuixTheme.colorScheme.error,
-                ),
-                insideMargin = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-            ) {
-                Text("清空", maxLines = 1)
-            }
-        }
+        ToolbarGridRow(
+            slotCount = 4,
+            content = listOf(
+                {
+                    UniformToolbarButton(
+                        text = "拍照识别",
+                        onClick = onTakeCoeffPhoto,
+                        enabled = !state.busy,
+                        primary = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+                {
+                    UniformToolbarButton(
+                        text = "相册选图",
+                        onClick = onPickCoeffPhoto,
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+                {
+                    UniformToolbarButton(
+                        text = "导入名单",
+                        onClick = onImportNames,
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+                {
+                    UniformToolbarButton(
+                        text = "新增人员",
+                        onClick = { showAddDialog = true },
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+            ),
+        )
+
+        ToolbarGridRow(
+            slotCount = 4,
+            content = listOf(
+                {
+                    UniformToolbarButton(
+                        text = "清空名单",
+                        onClick = { showClearConfirm = true },
+                        enabled = !state.busy && state.staffList.isNotEmpty(),
+                        danger = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                },
+            ),
+        )
 
         if (state.staffList.isEmpty()) {
             Card(
@@ -198,24 +199,20 @@ fun StaffTab(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            TextButton(
+            UniformDialogButton(
                 text = "取消",
                 onClick = { showClearConfirm = false },
                 modifier = Modifier.weight(1f),
             )
-            Button(
+            UniformDialogButton(
+                text = "确认清空",
+                danger = true,
                 onClick = {
                     state.clearStaffList()
                     showClearConfirm = false
                 },
-                colors = ButtonDefaults.buttonColors(
-                    color = MiuixTheme.colorScheme.errorContainer,
-                    contentColor = MiuixTheme.colorScheme.error,
-                ),
                 modifier = Modifier.weight(1f),
-            ) {
-                Text("确认清空", maxLines = 1)
-            }
+            )
         }
     }
 }
@@ -381,26 +378,22 @@ private fun StaffEditDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (onDelete != null) {
-                    Button(
+                    UniformDialogButton(
+                        text = "删除",
                         onClick = onDelete,
-                        colors = ButtonDefaults.buttonColors(
-                            color = MiuixTheme.colorScheme.errorContainer,
-                            contentColor = MiuixTheme.colorScheme.error,
-                        ),
+                        danger = true,
                         modifier = Modifier.weight(1f),
-                    ) {
-                        Text("删除", maxLines = 1)
-                    }
+                    )
                 }
-                TextButton(
+                UniformDialogButton(
                     text = "取消",
                     onClick = onDismiss,
                     modifier = Modifier.weight(1f),
                 )
-                TextButton(
+                UniformDialogButton(
                     text = if (isEdit) "保存" else "确定",
+                    primary = true,
                     enabled = name.isNotBlank(),
-                    colors = ButtonDefaults.textButtonColorsPrimary(),
                     onClick = {
                         onSave(
                             StaffEntryUi(

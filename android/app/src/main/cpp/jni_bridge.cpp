@@ -62,6 +62,46 @@ bool read_asset_bytes(AAssetManager* mgr, const char* filename, std::vector<uint
     return read_n == len;
 }
 
+void ensure_sheet_initialized_unlocked() {
+    if (g_sheet.weeks <= 0) g_sheet.weeks = 5;
+    if (g_sheet.column_shift_codes.empty() || g_sheet.column_shift_names.empty()) {
+        g_sheet.column_shift_codes = {"A", "Z", "P", "Y", "T"};
+        g_sheet.column_shift_names = {"A(主)", "治/白", "P", "夜", "技术难度"};
+    }
+    if (g_sheet.week_labels.empty()) {
+        g_sheet.week_labels = default_week_labels(g_sheet.year, g_sheet.month, g_sheet.weeks);
+    }
+}
+
+WorkloadRow make_blank_workload_row(int row_idx, const std::string& name) {
+    int cols_per_week = static_cast<int>(g_sheet.column_shift_names.size());
+    WorkloadRow wrow;
+    wrow.row = row_idx;
+    wrow.ocr_name = name;
+    wrow.staff_name = name;
+    wrow.name_confidence = 1.0f;
+    wrow.name_needs_review = false;
+    wrow.cells.reserve(static_cast<size_t>(g_sheet.weeks) * static_cast<size_t>(cols_per_week));
+    for (int w = 0; w < g_sheet.weeks; ++w) {
+        for (int sc = 0; sc < cols_per_week; ++sc) {
+            WorkloadCell cell;
+            cell.row = row_idx;
+            cell.week = w;
+            cell.shift_col = sc;
+            cell.kind = ValueKind::Blank;
+            cell.value = 0.0;
+            cell.ocr_kind = ValueKind::Blank;
+            cell.ocr_value = 0.0;
+            cell.confidence = 1.0f;
+            cell.ink_cat = InkCategory::Empty;
+            cell.status = ReviewStatus::UserConfirmed;
+            cell.locked_by_user = true;
+            wrow.cells.push_back(std::move(cell));
+        }
+    }
+    return wrow;
+}
+
 std::string build_workload_response_json(bool ok, const std::string& err) {
     nlohmann::json resp;
     resp["ok"] = ok;
@@ -220,9 +260,19 @@ Java_com_scluzlep_nurseocreport_NativeBridge_nativeApplyNamesToWorkload(
             if (item.is_string()) dict.push_back(item.get<std::string>());
         }
         if (g_sheet.rows.empty()) {
-            return env->NewStringUTF(build_workload_response_json(false, "请先识别工作量照片").c_str());
+            ensure_sheet_initialized_unlocked();
+            for (const auto& nm : dict) {
+                std::string norm = normalize_person_name(nm);
+                std::string final_nm = norm.empty() ? nm : norm;
+                if (!final_nm.empty()) {
+                    g_sheet.rows.push_back(
+                        make_blank_workload_row(static_cast<int>(g_sheet.rows.size()), final_nm));
+                }
+            }
+            g_sheet.geometry.grid_rows = static_cast<int>(g_sheet.rows.size());
+        } else {
+            apply_name_list_to_workload(g_sheet, dict);
         }
-        apply_name_list_to_workload(g_sheet, dict);
         return env->NewStringUTF(build_workload_response_json(true, "").c_str());
     } catch (const std::exception& ex) {
         return env->NewStringUTF(build_workload_response_json(false, ex.what()).c_str());
@@ -384,42 +434,9 @@ Java_com_scluzlep_nurseocreport_NativeBridge_nativeAddWorkloadRow(
         return env->NewStringUTF(build_workload_response_json(false, "姓名不能为空").c_str());
     }
 
-    if (g_sheet.weeks <= 0) g_sheet.weeks = 5;
-    if (g_sheet.column_shift_codes.empty() || g_sheet.column_shift_names.empty()) {
-        g_sheet.column_shift_codes = {"A", "Z", "P", "Y", "T"};
-        g_sheet.column_shift_names = {"A(主)", "治/白", "P", "夜", "技术难度"};
-    }
-    if (g_sheet.week_labels.empty()) {
-        g_sheet.week_labels = default_week_labels(g_sheet.year, g_sheet.month, g_sheet.weeks);
-    }
-
+    ensure_sheet_initialized_unlocked();
     int new_row_idx = static_cast<int>(g_sheet.rows.size());
-    int cols_per_week = static_cast<int>(g_sheet.column_shift_names.size());
-    WorkloadRow wrow;
-    wrow.row = new_row_idx;
-    wrow.ocr_name = final_name;
-    wrow.staff_name = final_name;
-    wrow.name_confidence = 1.0f;
-    wrow.name_needs_review = false;
-    wrow.cells.reserve(static_cast<size_t>(g_sheet.weeks) * static_cast<size_t>(cols_per_week));
-    for (int w = 0; w < g_sheet.weeks; ++w) {
-        for (int sc = 0; sc < cols_per_week; ++sc) {
-            WorkloadCell cell;
-            cell.row = new_row_idx;
-            cell.week = w;
-            cell.shift_col = sc;
-            cell.kind = ValueKind::Blank;
-            cell.value = 0.0;
-            cell.ocr_kind = ValueKind::Blank;
-            cell.ocr_value = 0.0;
-            cell.confidence = 1.0f;
-            cell.ink_cat = InkCategory::Empty;
-            cell.status = ReviewStatus::UserConfirmed;
-            cell.locked_by_user = true;
-            wrow.cells.push_back(std::move(cell));
-        }
-    }
-    g_sheet.rows.push_back(std::move(wrow));
+    g_sheet.rows.push_back(make_blank_workload_row(new_row_idx, final_name));
     g_sheet.geometry.grid_rows = static_cast<int>(g_sheet.rows.size());
     return env->NewStringUTF(build_workload_response_json(true, "").c_str());
 }
