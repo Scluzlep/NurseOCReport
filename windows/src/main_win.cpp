@@ -2025,6 +2025,14 @@ LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             app->sheet_.month = std::max(1, std::min(12, _wtoi(mbuf)));
             app->sheet_.week_labels = default_week_labels(app->sheet_.year, app->sheet_.month, app->sheet_.weeks);
             app->summary = evaluate_workload(app->sheet_, app->config);
+            if (app->summary.pending_review_count > 0) {
+                std::wstring warn = L"当前还有 " + std::to_wstring(app->summary.pending_review_count) +
+                                    L" 处低置信待确认项未核对。\n\n点击“是”先跳转核对，点击“否”仍然直接导出。";
+                if (MessageBoxW(hwnd, warn.c_str(), L"还有待确认项", MB_YESNO | MB_ICONWARNING) == IDYES) {
+                    app->jump_to_next_review(false);
+                    break;
+                }
+            }
 
             std::wstring out_w = save_xlsx_dialog(hwnd, app->sheet_.year, app->sheet_.month);
             if (!out_w.empty()) {

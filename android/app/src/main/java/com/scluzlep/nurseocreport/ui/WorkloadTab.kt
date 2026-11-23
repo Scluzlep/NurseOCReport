@@ -93,6 +93,7 @@ fun WorkloadTab(
     var showDeleteRowConfirm by remember { mutableStateOf(false) }
     var showAddRowDialog by remember { mutableStateOf(false) }
     var showYearMonthDialog by remember { mutableStateOf(false) }
+    var showExportConfirmDialog by remember { mutableStateOf(false) }
 
     val currentSheet = state.sheet
     val currentSummary = state.summary
@@ -137,7 +138,13 @@ fun WorkloadTab(
                 {
                     UniformToolbarButton(
                         text = "导出分享",
-                        onClick = { state.exportAndShareXlsx() },
+                        onClick = {
+                            if ((currentSummary?.pendingReviewCount ?: 0) > 0) {
+                                showExportConfirmDialog = true
+                            } else {
+                                state.exportAndShareXlsx()
+                            }
+                        },
                         enabled = !state.busy && currentSheet != null && currentSheet.rows.isNotEmpty(),
                         primary = true,
                         modifier = Modifier.weight(1f),
@@ -263,6 +270,30 @@ fun WorkloadTab(
                     },
                 ),
             )
+        }
+
+        // Warning bar when low-confidence cells still need review
+        val pendingCount = currentSummary?.pendingReviewCount ?: 0
+        if (currentSheet != null && pendingCount > 0) {
+            val isDarkWarn = isSystemInDarkTheme()
+            val warnBg = if (isDarkWarn) Color(0xFF4A2E14) else Color(0xFFFFF3CD)
+            val warnFg = if (isDarkWarn) Color(0xFFFFCA62) else Color(0xFF9A3412)
+            Surface(
+                onClick = { state.selectNextPendingReview() },
+                shape = RoundedCornerShape(10.dp),
+                color = warnBg,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = "共有 $pendingCount 处低置信待确认，点击此处跳转核对",
+                    style = MiuixTheme.textStyles.footnote1,
+                    fontWeight = FontWeight.SemiBold,
+                    color = warnFg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
         }
 
         // Photo preview & auto-zoom cell highlight canvas
@@ -506,7 +537,18 @@ fun WorkloadTab(
                     sheet = currentSheet,
                     summary = currentSummary,
                     onSelectOrEditRow = { rowIdx ->
-                        if (state.selectedRow == rowIdx && state.selectedColIndex == -1) {
+                        val rowCells = currentSheet.rows.getOrNull(rowIdx)?.cells.orEmpty()
+                        val pendingIndices = rowCells.indices.filter { rowCells[it].status == 1 }
+                        if (pendingIndices.isNotEmpty() && state.selectedRow != rowIdx) {
+                            state.selectCell(rowIdx, pendingIndices.first())
+                        } else if (pendingIndices.isNotEmpty() && state.selectedRow == rowIdx && state.selectedColIndex >= 0) {
+                            val nextInRow = pendingIndices.firstOrNull { it > state.selectedColIndex }
+                            if (nextInRow != null) {
+                                state.selectCell(rowIdx, nextInRow)
+                            } else {
+                                state.selectCell(rowIdx, -1)
+                            }
+                        } else if (state.selectedRow == rowIdx && state.selectedColIndex == -1) {
                             showCustomInputDialog = true
                         } else {
                             state.selectCell(rowIdx, -1)
@@ -799,6 +841,36 @@ fun WorkloadTab(
             }
         }
     }
+
+    SuperDialog(
+        show = showExportConfirmDialog,
+        title = "还有待确认项未核对",
+        summary = "当前还有 ${currentSummary?.pendingReviewCount ?: 0} 处低置信识别结果未确认，建议先核对再导出。",
+        onDismissRequest = { showExportConfirmDialog = false },
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            UniformDialogButton(
+                text = "仍然导出",
+                onClick = {
+                    showExportConfirmDialog = false
+                    state.exportAndShareXlsx()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            UniformDialogButton(
+                text = "先去核对",
+                primary = true,
+                onClick = {
+                    showExportConfirmDialog = false
+                    state.selectNextPendingReview()
+                },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
 }
 
 @Composable
@@ -1088,7 +1160,7 @@ private fun SummaryTableSection(
                 .padding(horizontal = 10.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("姓名", modifier = Modifier.width(84.dp), style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.Bold, maxLines = 1)
+            Text("姓名", modifier = Modifier.width(96.dp), style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.Bold, maxLines = 1)
             enabledRules.forEach { r ->
                 Text(r.name, modifier = Modifier.width(68.dp), style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -1099,13 +1171,17 @@ private fun SummaryTableSection(
         HorizontalDivider()
         LazyColumn(modifier = Modifier.weight(1f)) {
             itemsIndexed(summary.people) { idx, person ->
-                val needsRev = sheet.rows.getOrNull(idx)?.nameNeedsReview == true
+                val rowObj = sheet.rows.getOrNull(idx)
+                val needsRev = rowObj?.nameNeedsReview == true
+                val rowDigitPending = rowObj?.cells?.count { it.status == 1 } ?: 0
+                val hasAnyWarning = needsRev || rowDigitPending > 0 || !person.matchedInStaff
+                val warnColor = if (isDark) Color(0xFFFFB74D) else Color(0xFFB45309)
                 Row(
                     modifier = Modifier
                         .background(
                             when {
                                 idx == state.selectedRow -> selectedBg
-                                needsRev || !person.matchedInStaff -> reviewBg
+                                hasAnyWarning -> reviewBg
                                 idx % 2 == 1 -> zebraBg
                                 else -> MiuixTheme.colorScheme.surfaceContainer
                             }
@@ -1114,14 +1190,31 @@ private fun SummaryTableSection(
                         .padding(horizontal = 10.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = person.name,
-                        modifier = Modifier.width(84.dp),
-                        style = MiuixTheme.textStyles.body2,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Column(modifier = Modifier.width(96.dp)) {
+                        Text(
+                            text = person.name,
+                            style = MiuixTheme.textStyles.body2,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (rowDigitPending > 0) {
+                            Text(
+                                text = "${rowDigitPending}处待核",
+                                style = MiuixTheme.textStyles.footnote1,
+                                fontWeight = FontWeight.SemiBold,
+                                color = warnColor,
+                                maxLines = 1,
+                            )
+                        } else if (needsRev) {
+                            Text(
+                                text = "姓名待核",
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.error,
+                                maxLines = 1,
+                            )
+                        }
+                    }
                     enabledRules.indices.forEach { rIdx ->
                         val v = person.shiftTotals.getOrElse(rIdx) { 0.0 }
                         Text(formatNumberTrim(v), modifier = Modifier.width(68.dp), style = MiuixTheme.textStyles.body2, maxLines = 1)
@@ -1145,7 +1238,7 @@ private fun SummaryTableSection(
                         .padding(horizontal = 10.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("合计", modifier = Modifier.width(84.dp), style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.Bold, maxLines = 1)
+                    Text("合计", modifier = Modifier.width(96.dp), style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.Bold, maxLines = 1)
                     enabledRules.indices.forEach { rIdx ->
                         val gt = summary.shiftGrandTotals.getOrElse(rIdx) { 0.0 }
                         Text(formatNumberTrim(gt), modifier = Modifier.width(68.dp), style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.Bold, maxLines = 1)
@@ -1228,11 +1321,23 @@ private fun WeeklyDetailSection(
                                 .padding(vertical = 6.dp, horizontal = 6.dp),
                         ) {
                             val txt = if (cell.isBlank) "" else formatNumberTrim(cell.value)
-                            Text(
-                                text = txt.ifEmpty { "-" },
-                                style = MiuixTheme.textStyles.body2,
-                                maxLines = 1,
-                            )
+                            val isReview = (cell.status == 1)
+                            val displayTxt = if (isReview) "${txt.ifEmpty { "空" }}?" else txt.ifEmpty { "-" }
+                            if (isReview) {
+                                Text(
+                                    text = displayTxt,
+                                    style = MiuixTheme.textStyles.body2,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isDark) Color(0xFFFFB74D) else Color(0xFFB45309),
+                                    maxLines = 1,
+                                )
+                            } else {
+                                Text(
+                                    text = displayTxt,
+                                    style = MiuixTheme.textStyles.body2,
+                                    maxLines = 1,
+                                )
+                            }
                         }
                     }
                 }

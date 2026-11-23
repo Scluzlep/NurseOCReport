@@ -4,8 +4,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val propVersionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 201
-val propVersionName = (project.findProperty("versionName") as String?) ?: "0.2.1"
+val propVersionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 202
+val propVersionName = (project.findProperty("versionName") as String?) ?: "0.2.2"
 
 android {
     namespace = "com.scluzlep.nurseocreport"
