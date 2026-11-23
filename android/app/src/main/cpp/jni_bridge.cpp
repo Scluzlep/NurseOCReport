@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -67,6 +68,8 @@ std::string build_workload_response_json(bool ok, const std::string& err) {
     resp["error"] = err;
     if (ok) {
         SheetSummary sum = evaluate_workload(g_sheet, g_config);
+        resp["year"] = g_sheet.year;
+        resp["month"] = g_sheet.month;
         resp["sheet"] = nlohmann::json::parse(serialize_workload_sheet_json(g_sheet));
         resp["summary"] = nlohmann::json::parse(serialize_sheet_summary_json(sum));
     }
@@ -147,6 +150,18 @@ Java_com_scluzlep_nurseocreport_NativeBridge_nativeSetConfigJson(
         return env->NewStringUTF("{\"ok\":true}");
     }
     return env->NewStringUTF(build_workload_response_json(true, "").c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_scluzlep_nurseocreport_NativeBridge_nativeParseNamesText(
+    JNIEnv* env, jobject, jstring raw_text) {
+    std::string raw = jstring_to_utf8(env, raw_text);
+    std::vector<std::string> names = parse_names_from_plain_text(raw);
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& n : names) {
+        arr.push_back(n);
+    }
+    return env->NewStringUTF(arr.dump().c_str());
 }
 
 JNIEXPORT jstring JNICALL
@@ -335,6 +350,80 @@ Java_com_scluzlep_nurseocreport_NativeBridge_nativeEditCell(
     return env->NewStringUTF(build_workload_response_json(true, "").c_str());
 }
 
+JNIEXPORT jstring JNICALL
+Java_com_scluzlep_nurseocreport_NativeBridge_nativeDeleteWorkloadRow(
+    JNIEnv* env, jobject, jint row_index) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (row_index < 0 || row_index >= static_cast<int>(g_sheet.rows.size())) {
+        return env->NewStringUTF(build_workload_response_json(false, "行号越界").c_str());
+    }
+    g_sheet.rows.erase(g_sheet.rows.begin() + row_index);
+    for (int r = 0; r < static_cast<int>(g_sheet.rows.size()); ++r) {
+        g_sheet.rows[r].row = r;
+        for (auto& cell : g_sheet.rows[r].cells) {
+            cell.row = r;
+        }
+    }
+    g_sheet.geometry.grid_rows = static_cast<int>(g_sheet.rows.size());
+    return env->NewStringUTF(build_workload_response_json(true, "").c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_scluzlep_nurseocreport_NativeBridge_nativeAddWorkloadRow(
+    JNIEnv* env, jobject, jstring staff_name) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    std::string raw = jstring_to_utf8(env, staff_name);
+    size_t b = 0;
+    while (b < raw.size() && std::isspace(static_cast<unsigned char>(raw[b]))) ++b;
+    size_t e = raw.size();
+    while (e > b && std::isspace(static_cast<unsigned char>(raw[e - 1]))) --e;
+    std::string trimmed = raw.substr(b, e - b);
+    std::string norm = normalize_person_name(trimmed);
+    std::string final_name = norm.empty() ? trimmed : norm;
+    if (final_name.empty()) {
+        return env->NewStringUTF(build_workload_response_json(false, "姓名不能为空").c_str());
+    }
+
+    if (g_sheet.weeks <= 0) g_sheet.weeks = 5;
+    if (g_sheet.column_shift_codes.empty() || g_sheet.column_shift_names.empty()) {
+        g_sheet.column_shift_codes = {"A", "Z", "P", "Y", "T"};
+        g_sheet.column_shift_names = {"A(主)", "治/白", "P", "夜", "技术难度"};
+    }
+    if (g_sheet.week_labels.empty()) {
+        g_sheet.week_labels = default_week_labels(g_sheet.year, g_sheet.month, g_sheet.weeks);
+    }
+
+    int new_row_idx = static_cast<int>(g_sheet.rows.size());
+    int cols_per_week = static_cast<int>(g_sheet.column_shift_names.size());
+    WorkloadRow wrow;
+    wrow.row = new_row_idx;
+    wrow.ocr_name = final_name;
+    wrow.staff_name = final_name;
+    wrow.name_confidence = 1.0f;
+    wrow.name_needs_review = false;
+    wrow.cells.reserve(static_cast<size_t>(g_sheet.weeks) * static_cast<size_t>(cols_per_week));
+    for (int w = 0; w < g_sheet.weeks; ++w) {
+        for (int sc = 0; sc < cols_per_week; ++sc) {
+            WorkloadCell cell;
+            cell.row = new_row_idx;
+            cell.week = w;
+            cell.shift_col = sc;
+            cell.kind = ValueKind::Blank;
+            cell.value = 0.0;
+            cell.ocr_kind = ValueKind::Blank;
+            cell.ocr_value = 0.0;
+            cell.confidence = 1.0f;
+            cell.ink_cat = InkCategory::Empty;
+            cell.status = ReviewStatus::UserConfirmed;
+            cell.locked_by_user = true;
+            wrow.cells.push_back(std::move(cell));
+        }
+    }
+    g_sheet.rows.push_back(std::move(wrow));
+    g_sheet.geometry.grid_rows = static_cast<int>(g_sheet.rows.size());
+    return env->NewStringUTF(build_workload_response_json(true, "").c_str());
+}
+
 JNIEXPORT jintArray JNICALL
 Java_com_scluzlep_nurseocreport_NativeBridge_nativeGetWorkingImageSize(JNIEnv* env, jobject) {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -355,22 +444,32 @@ JNIEXPORT void JNICALL
 Java_com_scluzlep_nurseocreport_NativeBridge_nativeRenderCellPreview(
     JNIEnv* env, jobject, jint row, jint col_index, jobject out_bitmap) {
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_working_img.valid() || row < 0 || row >= static_cast<int>(g_sheet.rows.size())) return;
+    if (!g_working_img.valid() || !out_bitmap || row < 0 || row >= static_cast<int>(g_sheet.rows.size())) return;
+    AndroidBitmapInfo info{};
+    if (AndroidBitmap_getInfo(env, out_bitmap, &info) < 0) return;
     const auto& wrow = g_sheet.rows[row];
     std::array<Point2f, 4> quad{};
-    int cw = 120, ch = 80;
     if (col_index < 0) {
         quad = wrow.name_quad;
-        cw = 200;
-        ch = 72;
     } else if (col_index < static_cast<int>(wrow.cells.size())) {
         quad = wrow.cells[col_index].orig_quad;
-        cw = 120;
-        ch = 80;
     } else {
         return;
     }
-    ImageRgb crop = crop_quad_image(g_working_img, quad, cw, ch);
+    if (std::hypot(quad[1].x - quad[0].x, quad[1].y - quad[0].y) <= 1.0f ||
+        std::hypot(quad[3].x - quad[0].x, quad[3].y - quad[0].y) <= 1.0f) {
+        return;
+    }
+    float cx = 0.25f * (quad[0].x + quad[1].x + quad[2].x + quad[3].x);
+    float cy = 0.25f * (quad[0].y + quad[1].y + quad[2].y + quad[3].y);
+    std::array<Point2f, 4> padded_quad = quad;
+    for (auto& pt : padded_quad) {
+        pt.x = cx + (pt.x - cx) * 1.12f;
+        pt.y = cy + (pt.y - cy) * 1.12f;
+    }
+    int cw = std::max(64, static_cast<int>(info.width));
+    int ch = std::max(48, static_cast<int>(info.height));
+    ImageRgb crop = crop_quad_image(g_working_img, padded_quad, cw, ch);
     write_rgb_to_rgba8888_bitmap(crop, env, out_bitmap);
 }
 

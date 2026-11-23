@@ -4,12 +4,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val propVersionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
-val propVersionName = (project.findProperty("versionName") as String?) ?: "0.1.0"
+val propVersionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 200
+val propVersionName = (project.findProperty("versionName") as String?) ?: "0.2.0"
 
 android {
     namespace = "com.scluzlep.nurseocreport"
-    compileSdk = 35
+    compileSdk = 36
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
@@ -48,9 +48,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         compose = true
     }
@@ -73,11 +70,17 @@ android {
     }
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2024.10.01"))
-    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("top.yukonga.miuix.kmp:miuix-android:0.8.8")
+    implementation("androidx.activity:activity-compose:1.10.1")
+    implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.core:core-ktx:1.16.0")
 }

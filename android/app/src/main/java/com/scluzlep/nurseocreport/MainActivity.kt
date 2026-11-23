@@ -9,29 +9,37 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
+import com.scluzlep.nurseocreport.ui.NameImportDialog
 import com.scluzlep.nurseocreport.ui.StaffTab
 import com.scluzlep.nurseocreport.ui.WeightsTab
 import com.scluzlep.nurseocreport.ui.WorkloadTab
+import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.basic.Surface
+import top.yukonga.miuix.kmp.basic.TabRowWithContour
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.theme.ColorSchemeMode
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.theme.ThemeController
+import top.yukonga.miuix.kmp.utils.MiuixPopupUtils.Companion.MiuixPopupHost
 import java.io.File
 
 class MainActivity : ComponentActivity() {
@@ -86,57 +94,66 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         appState = AppState(applicationContext, lifecycleScope)
 
         setContent {
+            val themeController = remember { ThemeController(ColorSchemeMode.System) }
+            var showNameImportDialog by remember { mutableStateOf(false) }
+            var importTargetWorkloadOnly by remember { mutableStateOf(false) }
+
             LaunchedEffect(Unit) {
                 appState.initialize()
                 handleIncomingIntent(intent)
             }
 
-            MaterialTheme {
+            MiuixTheme(controller = themeController) {
                 Scaffold(
+                    popupHost = { MiuixPopupHost() },
                     topBar = {
-                        Column {
-                            TopAppBar(
-                                title = {
-                                    Text(
-                                        "护士工作量识别统计",
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MiuixTheme.colorScheme.surface),
+                        ) {
+                            SmallTopAppBar(
+                                title = "护士工作量识别统计",
                             )
                             Surface(
-                                tonalElevation = 2.dp,
-                                modifier = Modifier.fillMaxWidth(),
+                                color = MiuixTheme.colorScheme.surfaceContainer,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 2.dp),
                             ) {
                                 Text(
                                     text = appState.statusMessage,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                                    style = MiuixTheme.textStyles.footnote1,
+                                    color = MiuixTheme.colorScheme.onSurfaceSecondary,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
                             }
                             if (appState.busy) {
-                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                LinearProgressIndicator(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                                )
                             }
                             val tabs = listOf("班次权重", "人员系数", "工作量识别")
-                            TabRow(selectedTabIndex = appState.activeTab) {
-                                tabs.forEachIndexed { idx, label ->
-                                    Tab(
-                                        selected = appState.activeTab == idx,
-                                        onClick = { appState.activeTab = idx },
-                                        text = { Text(label) },
-                                    )
-                                }
-                            }
+                            TabRowWithContour(
+                                tabs = tabs,
+                                selectedTabIndex = appState.activeTab,
+                                onTabSelected = { appState.activeTab = it },
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                minWidth = 84.dp,
+                                maxWidth = 160.dp,
+                            )
                         }
-                    }
+                    },
                 ) { padding ->
                     Column(
                         modifier = Modifier
@@ -150,9 +167,8 @@ class MainActivity : ComponentActivity() {
                                 onTakeCoeffPhoto = { startCameraCapture("coeff") },
                                 onPickCoeffPhoto = { pickCoeffPhotoLauncher.launch("image/*") },
                                 onImportNames = {
-                                    importNamesForStaffLauncher.launch(
-                                        arrayOf("text/*", "application/vnd.openxmlformats-officedocument.*")
-                                    )
+                                    importTargetWorkloadOnly = false
+                                    showNameImportDialog = true
                                 },
                             )
                             else -> WorkloadTab(
@@ -160,13 +176,35 @@ class MainActivity : ComponentActivity() {
                                 onTakePhoto = { startCameraCapture("workload") },
                                 onPickPhoto = { pickWorkloadPhotoLauncher.launch("image/*") },
                                 onImportNames = {
-                                    importNamesForWorkloadLauncher.launch(
-                                        arrayOf("text/*", "application/vnd.openxmlformats-officedocument.*")
-                                    )
+                                    importTargetWorkloadOnly = true
+                                    showNameImportDialog = true
                                 },
                             )
                         }
                     }
+
+                    NameImportDialog(
+                        show = showNameImportDialog,
+                        targetWorkloadOnly = importTargetWorkloadOnly,
+                        state = appState,
+                        onPickFile = {
+                            val mimes = arrayOf(
+                                "text/*",
+                                "text/csv",
+                                "text/comma-separated-values",
+                                "application/csv",
+                                "application/vnd.openxmlformats-officedocument.*",
+                                "application/vnd.ms-excel",
+                                "*/*",
+                            )
+                            if (importTargetWorkloadOnly) {
+                                importNamesForWorkloadLauncher.launch(mimes)
+                            } else {
+                                importNamesForStaffLauncher.launch(mimes)
+                            }
+                        },
+                        onDismiss = { showNameImportDialog = false },
+                    )
                 }
             }
         }

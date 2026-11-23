@@ -329,7 +329,7 @@ class AppState(
             val respStr = withContext(Dispatchers.IO) {
                 NativeBridge.nativeProcessWorkloadBytes(bytes, year, month)
             }
-            handleWorkloadResponse(respStr, reloadImage = true)
+            handleWorkloadResponse(respStr, reloadImage = true, syncDateFromSheet = true)
             busy = false
         }
     }
@@ -345,7 +345,7 @@ class AppState(
             val respStr = withContext(Dispatchers.IO) {
                 NativeBridge.nativeRotateWorkload(quarterTurnsCw, year, month)
             }
-            handleWorkloadResponse(respStr, reloadImage = true)
+            handleWorkloadResponse(respStr, reloadImage = true, syncDateFromSheet = true)
             busy = false
         }
     }
@@ -386,7 +386,29 @@ class AppState(
                 NativeBridge.nativeUpdateWorkloadCorners(flat, year, month)
             }
             cornerEditMode = false
-            handleWorkloadResponse(respStr, reloadImage = false)
+            handleWorkloadResponse(respStr, reloadImage = false, syncDateFromSheet = false)
+            busy = false
+        }
+    }
+
+    fun parseNamesFromText(rawText: String): List<String> {
+        if (rawText.isBlank()) return emptyList()
+        val jsonStr = runCatching { NativeBridge.nativeParseNamesText(rawText) }.getOrNull() ?: return emptyList()
+        val arr = runCatching { JSONArray(jsonStr) }.getOrNull() ?: return emptyList()
+        return List(arr.length()) { idx -> arr.optString(idx, "") }.filter { it.isNotBlank() }
+    }
+
+    fun importNamesList(names: List<String>, targetWorkloadOnly: Boolean) {
+        if (names.isEmpty()) {
+            statusMessage = "未提取到有效姓名"
+            return
+        }
+        val namesArr = JSONArray()
+        names.forEach { namesArr.put(it) }
+        scope.launch {
+            busy = true
+            statusMessage = "正在应用人员名单"
+            applyParsedNames(namesArr, targetWorkloadOnly)
             busy = false
         }
     }
@@ -421,37 +443,40 @@ class AppState(
                 busy = false
                 return@launch
             }
-            val namesJson = namesArr.toString()
-
-            if (targetWorkloadOnly) {
-                val wlStr = withContext(Dispatchers.IO) {
-                    NativeBridge.nativeApplyNamesToWorkload(namesJson)
-                }
-                handleWorkloadResponse(wlStr, reloadImage = false)
-                if (sheet != null) {
-                    statusMessage = "已用 ${namesArr.length()} 个标准姓名校准工作量表"
-                }
-            } else {
-                val alignStr = withContext(Dispatchers.IO) {
-                    NativeBridge.nativeAlignStaffWithNames(namesJson)
-                }
-                val alignObj = runCatching { JSONObject(alignStr) }.getOrNull()
-                if (alignObj == null || !alignObj.optBoolean("ok", false)) {
-                    statusMessage = alignObj?.optString("error", "姓名校准失败") ?: "姓名校准失败"
-                } else {
-                    alignObj.optJSONObject("config")?.let { cfgObj ->
-                        applyConfigFromJsonText(cfgObj.toString())
-                        withContext(Dispatchers.IO) {
-                            runCatching { configFile.writeText(serializeConfigJson(), Charsets.UTF_8) }
-                        }
-                    }
-                    if (alignObj.has("sheet") && alignObj.has("summary")) {
-                        updateSheetAndSummaryFromJson(alignObj)
-                    }
-                    statusMessage = "已用 ${namesArr.length()} 个标准姓名完成校准"
-                }
-            }
+            applyParsedNames(namesArr, targetWorkloadOnly)
             busy = false
+        }
+    }
+
+    private suspend fun applyParsedNames(namesArr: JSONArray, targetWorkloadOnly: Boolean) {
+        val namesJson = namesArr.toString()
+        if (targetWorkloadOnly) {
+            val wlStr = withContext(Dispatchers.IO) {
+                NativeBridge.nativeApplyNamesToWorkload(namesJson)
+            }
+            handleWorkloadResponse(wlStr, reloadImage = false, syncDateFromSheet = false)
+            if (sheet != null) {
+                statusMessage = "已用 ${namesArr.length()} 个标准姓名校准工作量表"
+            }
+        } else {
+            val alignStr = withContext(Dispatchers.IO) {
+                NativeBridge.nativeAlignStaffWithNames(namesJson)
+            }
+            val alignObj = runCatching { JSONObject(alignStr) }.getOrNull()
+            if (alignObj == null || !alignObj.optBoolean("ok", false)) {
+                statusMessage = alignObj?.optString("error", "姓名校准失败") ?: "姓名校准失败"
+            } else {
+                alignObj.optJSONObject("config")?.let { cfgObj ->
+                    applyConfigFromJsonText(cfgObj.toString())
+                    withContext(Dispatchers.IO) {
+                        runCatching { configFile.writeText(serializeConfigJson(), Charsets.UTF_8) }
+                    }
+                }
+                if (alignObj.has("sheet") && alignObj.has("summary")) {
+                    updateSheetAndSummaryFromJson(alignObj, syncDateFromSheet = false)
+                }
+                statusMessage = "已用 ${namesArr.length()} 个标准姓名完成校准"
+            }
         }
     }
 
@@ -461,10 +486,10 @@ class AppState(
         refreshSelectedPreview()
     }
 
-    fun selectNextPendingReview() {
-        val s = sheet ?: return
+    fun selectNextPendingReview(silentIfEmpty: Boolean = false): Boolean {
+        val s = sheet ?: return false
         val totalRows = s.rows.size
-        if (totalRows == 0) return
+        if (totalRows == 0) return false
 
         val items = mutableListOf<Pair<Int, Int>>()
         for (r in 0 until totalRows) {
@@ -479,25 +504,90 @@ class AppState(
             }
         }
         if (items.isEmpty()) {
-            statusMessage = "当前没有待确认单元格"
-            return
+            if (!silentIfEmpty) {
+                statusMessage = "当前没有待确认单元格"
+            }
+            return false
         }
-        val curIdx = items.indexOfFirst { it.first == selectedRow && it.second == selectedColIndex }
-        val next = items[(curIdx + 1) % items.size]
+        val next = items.firstOrNull {
+            it.first > selectedRow || (it.first == selectedRow && it.second > selectedColIndex)
+        } ?: items.first()
         selectCell(next.first, next.second)
+        return true
     }
 
-    fun editCell(row: Int, colIndex: Int, isBlank: Boolean, value: Double, nameText: String?) {
+    fun editCell(
+        row: Int,
+        colIndex: Int,
+        isBlank: Boolean,
+        value: Double,
+        nameText: String?,
+        advanceAfterEdit: Boolean = false,
+    ) {
         scope.launch {
             val respStr = withContext(Dispatchers.IO) {
                 NativeBridge.nativeEditCell(row, colIndex, isBlank, value, nameText)
             }
             val obj = runCatching { JSONObject(respStr) }.getOrNull()
             if (obj != null && obj.optBoolean("ok", false)) {
-                updateSheetAndSummaryFromJson(obj)
-                refreshSelectedPreview()
+                updateSheetAndSummaryFromJson(obj, syncDateFromSheet = false)
+                if (!advanceAfterEdit || !selectNextPendingReview(silentIfEmpty = true)) {
+                    refreshSelectedPreview()
+                }
             } else if (obj != null) {
                 statusMessage = obj.optString("error", "修改失败")
+            }
+        }
+    }
+
+    fun deleteWorkloadRow(rowIndex: Int) {
+        scope.launch {
+            val respStr = withContext(Dispatchers.IO) {
+                NativeBridge.nativeDeleteWorkloadRow(rowIndex)
+            }
+            val obj = runCatching { JSONObject(respStr) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                updateSheetAndSummaryFromJson(obj, syncDateFromSheet = false)
+                val rows = sheet?.rows.orEmpty()
+                if (rows.isEmpty()) {
+                    selectedRow = -1
+                    selectedColIndex = -2
+                    cellPreviewBitmap = null
+                } else {
+                    val nextR = rowIndex.coerceIn(0, rows.lastIndex)
+                    val maxCol = rows[nextR].cells.size - 1
+                    val nextC = if (selectedColIndex >= -1) selectedColIndex.coerceAtMost(maxCol) else -1
+                    selectCell(nextR, nextC)
+                }
+                statusMessage = "已删除第 ${rowIndex + 1} 行"
+            } else if (obj != null) {
+                statusMessage = obj.optString("error", "删除行失败")
+            }
+        }
+    }
+
+    fun addWorkloadRow(staffName: String) {
+        val trimmed = staffName.trim()
+        if (trimmed.isEmpty()) {
+            statusMessage = "姓名不能为空"
+            return
+        }
+        scope.launch {
+            val respStr = withContext(Dispatchers.IO) {
+                NativeBridge.nativeAddWorkloadRow(trimmed)
+            }
+            val obj = runCatching { JSONObject(respStr) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                updateSheetAndSummaryFromJson(obj, syncDateFromSheet = false)
+                val rows = sheet?.rows.orEmpty()
+                if (rows.isNotEmpty()) {
+                    val newIdx = rows.lastIndex
+                    val firstCol = if (rows[newIdx].cells.isNotEmpty()) 0 else -1
+                    selectCell(newIdx, firstCol)
+                }
+                statusMessage = "已新增行: $trimmed"
+            } else if (obj != null) {
+                statusMessage = obj.optString("error", "新增行失败")
             }
         }
     }
@@ -517,8 +607,11 @@ class AppState(
             }
             val obj = runCatching { JSONObject(respStr) }.getOrNull()
             if (obj != null && obj.optBoolean("ok", false)) {
-                updateSheetAndSummaryFromJson(obj)
-                selectNextPendingReview()
+                updateSheetAndSummaryFromJson(obj, syncDateFromSheet = false)
+                if (!selectNextPendingReview(silentIfEmpty = true)) {
+                    refreshSelectedPreview()
+                    statusMessage = "当前已全部确认"
+                }
             }
         }
     }
@@ -559,18 +652,32 @@ class AppState(
         }
     }
 
+    private fun hasValidQuad(quad: List<PointUi>): Boolean {
+        if (quad.size != 4) return false
+        val minX = quad.minOf { it.x }
+        val maxX = quad.maxOf { it.x }
+        val minY = quad.minOf { it.y }
+        val maxY = quad.maxOf { it.y }
+        return (maxX - minX) > 1f && (maxY - minY) > 1f
+    }
+
     private fun refreshSelectedPreview() {
         val s = sheet
         val r = selectedRow
         val c = selectedColIndex
-        if (s == null || r !in s.rows.indices || (c >= 0 && c !in s.rows[r].cells.indices)) {
+        if (workingBitmap == null || s == null || r !in s.rows.indices || (c >= 0 && c !in s.rows[r].cells.indices)) {
+            cellPreviewBitmap = null
+            return
+        }
+        val quad = if (c < 0) s.rows[r].nameQuad else s.rows[r].cells[c].quad
+        if (!hasValidQuad(quad)) {
             cellPreviewBitmap = null
             return
         }
         scope.launch {
             val bmp = withContext(Dispatchers.IO) {
-                val w = if (c < 0) 240 else 160
-                val h = 96
+                val w = if (c < 0) 360 else 280
+                val h = 140
                 val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                 NativeBridge.nativeRenderCellPreview(r, c, out)
                 out
@@ -579,13 +686,17 @@ class AppState(
         }
     }
 
-    private suspend fun handleWorkloadResponse(respStr: String, reloadImage: Boolean) {
+    private suspend fun handleWorkloadResponse(
+        respStr: String,
+        reloadImage: Boolean,
+        syncDateFromSheet: Boolean = reloadImage,
+    ) {
         val obj = runCatching { JSONObject(respStr) }.getOrNull()
         if (obj == null || !obj.optBoolean("ok", false)) {
             statusMessage = obj?.optString("error", "识别失败") ?: "识别失败"
             return
         }
-        updateSheetAndSummaryFromJson(obj)
+        updateSheetAndSummaryFromJson(obj, syncDateFromSheet = syncDateFromSheet)
         if (reloadImage) {
             workingBitmap = withContext(Dispatchers.IO) {
                 val sz = NativeBridge.nativeGetWorkingImageSize()
@@ -604,8 +715,9 @@ class AppState(
         }
         val cur = sheet
         if (cur != null && cur.rows.isNotEmpty()) {
-            selectNextPendingReview()
-            if (selectedRow !in cur.rows.indices) {
+            selectedRow = -1
+            selectedColIndex = -2
+            if (!selectNextPendingReview(silentIfEmpty = true)) {
                 selectCell(0, 0)
             }
             val pending = summary?.pendingReviewCount ?: 0
@@ -617,9 +729,14 @@ class AppState(
         }
     }
 
-    private fun updateSheetAndSummaryFromJson(root: JSONObject) {
+    private fun updateSheetAndSummaryFromJson(root: JSONObject, syncDateFromSheet: Boolean = false) {
         if (root.has("sheet")) {
-            sheet = parseSheet(root.getJSONObject("sheet"))
+            val parsedSheet = parseSheet(root.getJSONObject("sheet"))
+            sheet = parsedSheet
+            if (syncDateFromSheet) {
+                if (parsedSheet.year in 2000..2100) year = parsedSheet.year
+                if (parsedSheet.month in 1..12) month = parsedSheet.month
+            }
         }
         if (root.has("summary")) {
             summary = parseSummary(root.getJSONObject("summary"))
