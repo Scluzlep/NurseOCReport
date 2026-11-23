@@ -493,27 +493,69 @@ std::vector<std::string> parse_names_from_plain_text(const std::string& utf8_tex
     std::vector<std::string> out;
     std::unordered_set<std::string> seen;
 
-    // Split on ASCII whitespace, ASCII punctuation, and common Chinese separators
-    std::string replaced;
-    replaced.reserve(utf8_text.size());
+    auto emit_candidate = [&](const std::string& raw_tok) {
+        std::string cleaned = clean_candidate_token(raw_tok);
+        if (!cleaned.empty() && seen.insert(cleaned).second) {
+            out.push_back(std::move(cleaned));
+        }
+    };
+
+    // Split first on strong punctuation/line delimiters, then on ASCII/full-width spaces within each segment.
+    std::vector<std::string> segments;
+    std::string cur_seg;
     auto cps = utf8_to_codepoints(utf8_text);
     for (uint32_t cp : cps) {
         if (cp == '\r' || cp == '\n' || cp == '\t' || cp == ',' || cp == ';' ||
             cp == '|' || cp == '/' || cp == '\\' || cp == 0x3001 /* 、 */ ||
             cp == 0xFF0C /* ， */ || cp == 0xFF1B /* ； */ || cp == 0xFF1A /* ： */ ||
-            cp == ':' || cp == 0x0020 || cp == 0x3000) {
-            replaced.push_back('\n');
+            cp == ':') {
+            if (!cur_seg.empty()) {
+                segments.push_back(std::move(cur_seg));
+                cur_seg.clear();
+            }
+        } else if (cp <= 0x20 || cp == 0x3000) {
+            cur_seg.push_back(' ');
         } else {
-            replaced += codepoints_to_utf8({cp});
+            cur_seg += codepoints_to_utf8({cp});
         }
     }
+    if (!cur_seg.empty()) {
+        segments.push_back(std::move(cur_seg));
+    }
 
-    std::istringstream iss(replaced);
-    std::string tok;
-    while (std::getline(iss, tok)) {
-        std::string cleaned = clean_candidate_token(tok);
-        if (!cleaned.empty() && seen.insert(cleaned).second) {
-            out.push_back(std::move(cleaned));
+    for (const std::string& seg : segments) {
+        std::istringstream iss(seg);
+        std::string tok;
+        std::vector<std::pair<std::string, size_t>> tokens;
+        while (iss >> tok) {
+            auto tcps = utf8_to_codepoints(tok);
+            std::vector<uint32_t> kept;
+            for (uint32_t cp : tcps) {
+                if (is_cjk(cp) || cp == 0x00B7) kept.push_back(cp);
+            }
+            if (!kept.empty()) {
+                tokens.push_back({codepoints_to_utf8(kept), kept.size()});
+            }
+        }
+        // Merge runs of 1-character CJK fragments (e.g. "王 静" padded 2-char names)
+        // while keeping multi-character space-separated names ("张晓敏 王静") distinct.
+        for (size_t i = 0; i < tokens.size();) {
+            if (tokens[i].second >= 2) {
+                emit_candidate(tokens[i].first);
+                ++i;
+            } else {
+                size_t j = i;
+                while (j < tokens.size() && tokens[j].second == 1) ++j;
+                size_t run_len = j - i;
+                if (run_len == 3) {
+                    emit_candidate(tokens[i].first + tokens[i + 1].first + tokens[i + 2].first);
+                } else {
+                    for (size_t k = i; k + 1 < j; k += 2) {
+                        emit_candidate(tokens[k].first + tokens[k + 1].first);
+                    }
+                }
+                i = j;
+            }
         }
     }
     return out;

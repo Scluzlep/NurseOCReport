@@ -84,6 +84,12 @@ struct CellInkAnalysis {
     float ink_area_ratio = 0.0f;
     bool tall_thin_single_stroke = false;
     ImageRgb prepared_digit_canvas; // 96x48 dark ink on white background, centered
+    int core_px = 0;
+    int cell_w = 0;
+    int cell_h = 0;
+    int bbox_w = 0;
+    int bbox_h = 0;
+    int component_count = 0;
 };
 
 // Computes table-wide 90th-percentile ink reference contrast across candidate cells.

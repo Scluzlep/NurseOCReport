@@ -88,10 +88,10 @@ enum StyleId {
     ST_DEFAULT = 0,
     ST_TITLE_DARK_BLUE = 1,   // #1F4E78 white bold 16pt
     ST_HEADER_LIGHT_BLUE = 2, // #D9EAF7 black bold centered wrap border
-    ST_INPUT_INT = 3,         // #FFF2CC blue text border "0.##"
+    ST_INPUT_INT = 3,         // #FFF2CC blue text border "0.00"
     ST_FORMULA_2DP = 4,       // #E2F0D9 black text border "0.00"
-    ST_FORMULA_TRIM = 5,      // #E2F0D9 black text border "0.##"
-    ST_TOTAL_INT = 6,         // #E7E6E6 bold border "0.##"
+    ST_FORMULA_TRIM = 5,      // #E2F0D9 black text border "0.00"
+    ST_TOTAL_INT = 6,         // #E7E6E6 bold border "0.00"
     ST_TOTAL_2DP = 7,         // #E7E6E6 bold border "0.00"
     ST_NAME_CELL = 8,         // white bold left/center border
     ST_SEQ_INT = 9,           // #FFFFFF centered border "0"
@@ -106,10 +106,10 @@ enum StyleId {
     ST_SUM_ZEBRA_B = 18,      // #F7FAFC center "0"
     ST_SUM_2DP_A = 19,        // #FFFFFF center "0.00"
     ST_SUM_2DP_B = 20,        // #F7FAFC center "0.00"
-    ST_SUM_TRIM_A = 21,       // #FFFFFF center "0.##"
-    ST_SUM_TRIM_B = 22,       // #F7FAFC center "0.##"
+    ST_SUM_TRIM_A = 21,       // #FFFFFF center "0.00"
+    ST_SUM_TRIM_B = 22,       // #F7FAFC center "0.00"
     ST_SUM_TOTAL_2DP = 23,    // #D9EAF7 bold center "0.00"
-    ST_SUM_TOTAL_TRIM = 24,   // #D9EAF7 bold center "0.##"
+    ST_SUM_TOTAL_TRIM = 24,   // #D9EAF7 bold center "0.00"
     ST_SUM_TOTAL_LABEL = 25,  // #D9EAF7 bold center
 };
 
@@ -119,7 +119,7 @@ std::string build_styles_xml() {
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <numFmts count="3">
     <numFmt numFmtId="176" formatCode="0.00;\-0.00;\-"/>
-    <numFmt numFmtId="177" formatCode="0.##"/>
+    <numFmt numFmtId="177" formatCode="0.00"/>
     <numFmt numFmtId="178" formatCode="0"/>
   </numFmts>
   <fonts count="8">
