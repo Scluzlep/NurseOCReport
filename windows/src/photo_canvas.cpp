@@ -60,9 +60,10 @@ bool PhotoCanvas::create(HWND parent, HINSTANCE inst, int id, int x, int y, int 
 
 void PhotoCanvas::move(int x, int y, int w, int h) {
     if (hwnd_) {
-        bool had_size = (img_w_ > 0);
         MoveWindow(hwnd_, x, y, w, h, TRUE);
-        if (had_size && zoom_ <= 0.0) fit_to_view();
+        if (img_w_ > 0 && (!has_user_view_ || zoom_ <= 0.0)) {
+            fit_to_view();
+        }
     }
 }
 
@@ -70,10 +71,21 @@ void PhotoCanvas::show(bool visible) {
     if (hwnd_) ShowWindow(hwnd_, visible ? SW_SHOW : SW_HIDE);
 }
 
+void PhotoCanvas::set_dpi(UINT dpi) {
+    dpi_ = std::max(96u, dpi);
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void PhotoCanvas::set_font(HFONT font) {
+    font_ = font;
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void PhotoCanvas::set_image(const nurseocr::ImageRgb& img) {
     if (!img.valid()) {
         img_w_ = img_h_ = 0;
         dib_bgr_.clear();
+        has_user_view_ = false;
         if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
         return;
     }
@@ -90,6 +102,7 @@ void PhotoCanvas::set_image(const nurseocr::ImageRgb& img) {
             dp[x * 3 + 2] = sp[x * 3 + 0];
         }
     }
+    has_user_view_ = false;
     fit_to_view();
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -103,6 +116,10 @@ void PhotoCanvas::set_overlays(std::vector<HighlightBox> boxes,
 
 void PhotoCanvas::set_corner_edit_mode(bool enabled) {
     corner_edit_mode_ = enabled;
+    if (enabled && img_w_ > 0) {
+        has_user_view_ = false;
+        fit_to_view();
+    }
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -110,9 +127,10 @@ void PhotoCanvas::fit_to_view() {
     if (!hwnd_ || img_w_ <= 0 || img_h_ <= 0) return;
     RECT rc{};
     GetClientRect(hwnd_, &rc);
-    double vw = std::max(40, static_cast<int>(rc.right - rc.left));
-    double vh = std::max(40, static_cast<int>(rc.bottom - rc.top));
-    zoom_ = std::min((vw - 16.0) / img_w_, (vh - 16.0) / img_h_);
+    double pad = static_cast<double>(S(16));
+    double vw = std::max(40.0, static_cast<double>(rc.right - rc.left));
+    double vh = std::max(40.0, static_cast<double>(rc.bottom - rc.top));
+    zoom_ = std::min((vw - pad) / img_w_, (vh - pad) / img_h_);
     zoom_ = std::max(0.05, std::min(4.0, zoom_));
     pan_x_ = (vw - img_w_ * zoom_) * 0.5;
     pan_y_ = (vh - img_h_ * zoom_) * 0.5;
@@ -133,25 +151,50 @@ nurseocr::Point2f PhotoCanvas::screen_to_img(int sx, int sy) const {
     };
 }
 
+void PhotoCanvas::focus_on_quad(const std::array<nurseocr::Point2f, 4>& quad) {
+    if (!hwnd_ || img_w_ <= 0 || img_h_ <= 0) return;
+
+    float min_x = quad[0].x, max_x = quad[0].x;
+    float min_y = quad[0].y, max_y = quad[0].y;
+    for (int k = 1; k < 4; ++k) {
+        min_x = std::min(min_x, quad[k].x);
+        max_x = std::max(max_x, quad[k].x);
+        min_y = std::min(min_y, quad[k].y);
+        max_y = std::max(max_y, quad[k].y);
+    }
+    float qw = max_x - min_x;
+    float qh = max_y - min_y;
+    if (qw < 1.0f || qh < 1.0f) return;
+
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    double vw = std::max(60.0, static_cast<double>(rc.right - rc.left));
+    double vh = std::max(60.0, static_cast<double>(rc.bottom - rc.top));
+
+    double fit_zoom = std::min((vw - S(16)) / img_w_, (vh - S(16)) / img_h_);
+    // Zoom so the target cell plus surrounding neighbor context fills the viewport comfortably.
+    double target_w_zoom = (vw * 0.24) / std::max(12.0, static_cast<double>(qw));
+    double target_h_zoom = (vh * 0.22) / std::max(12.0, static_cast<double>(qh));
+    double desired = std::min(target_w_zoom, target_h_zoom);
+    double min_focus = std::max(0.5, fit_zoom * 2.8);
+    zoom_ = std::max(min_focus, std::min(8.0, desired));
+
+    float cx = 0.25f * (quad[0].x + quad[1].x + quad[2].x + quad[3].x);
+    float cy = 0.25f * (quad[0].y + quad[1].y + quad[2].y + quad[3].y);
+    pan_x_ = vw * 0.5 - cx * zoom_;
+    pan_y_ = vh * 0.5 - cy * zoom_;
+    has_user_view_ = true;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void PhotoCanvas::select_highlight(int row, int col_index, bool center_view) {
     sel_row_ = row;
     sel_col_index_ = col_index;
     if (center_view && hwnd_ && img_w_ > 0) {
         for (const auto& b : boxes_) {
             if (b.row == row && b.col_index == col_index) {
-                float cx = 0.25f * (b.quad[0].x + b.quad[1].x + b.quad[2].x + b.quad[3].x);
-                float cy = 0.25f * (b.quad[0].y + b.quad[1].y + b.quad[2].y + b.quad[3].y);
-                RECT rc{};
-                GetClientRect(hwnd_, &rc);
-                double vw = rc.right - rc.left;
-                double vh = rc.bottom - rc.top;
-                // Ensure a comfortable zoom so the nurse sees the digit clearly
-                if (zoom_ < std::min(vw, vh) / 650.0) {
-                    zoom_ = std::max(zoom_, std::min(2.2, std::min(vw, vh) / 480.0));
-                }
-                pan_x_ = vw * 0.5 - cx * zoom_;
-                pan_y_ = vh * 0.5 - cy * zoom_;
-                break;
+                focus_on_quad(b.quad);
+                return;
             }
         }
     }
@@ -192,8 +235,8 @@ void PhotoCanvas::paint(HDC hdc, const RECT& rc) {
                       dib_bgr_.data(), &bmi, DIB_RGB_COLORS, SRCCOPY);
 
         HGDIOBJ old_brush = SelectObject(memdc, GetStockObject(NULL_BRUSH));
-        HPEN rev_pen = CreatePen(PS_SOLID, 2, RGB(230, 130, 0));
-        HPEN sel_pen = CreatePen(PS_SOLID, 3, RGB(0, 102, 224));
+        HPEN rev_pen = CreatePen(PS_SOLID, std::max(2, S(2)), RGB(230, 130, 0));
+        HPEN sel_pen = CreatePen(PS_SOLID, std::max(3, S(3)), RGB(0, 102, 224));
         HGDIOBJ old_pen = SelectObject(memdc, rev_pen);
 
         for (const auto& b : boxes_) {
@@ -214,14 +257,15 @@ void PhotoCanvas::paint(HDC hdc, const RECT& rc) {
         }
 
         if (corner_edit_mode_) {
-            HPEN cpen = CreatePen(PS_DASH, 2, RGB(220, 40, 40));
+            HPEN cpen = CreatePen(PS_DASH, std::max(2, S(2)), RGB(220, 40, 40));
             SelectObject(memdc, cpen);
             POINT cpts[4];
             for (int k = 0; k < 4; ++k) cpts[k] = img_to_screen(corners_[k]);
             Polygon(memdc, cpts, 4);
             HBRUSH hbr = CreateSolidBrush(RGB(220, 40, 40));
+            int hs = std::max(5, S(7));
             for (int k = 0; k < 4; ++k) {
-                RECT hr{cpts[k].x - 7, cpts[k].y - 7, cpts[k].x + 7, cpts[k].y + 7};
+                RECT hr{cpts[k].x - hs, cpts[k].y - hs, cpts[k].x + hs, cpts[k].y + hs};
                 FillRect(memdc, &hr, hbr);
             }
             DeleteObject(hbr);
@@ -233,11 +277,14 @@ void PhotoCanvas::paint(HDC hdc, const RECT& rc) {
         DeleteObject(rev_pen);
         DeleteObject(sel_pen);
     } else {
+        HGDIOBJ old_font = font_ ? SelectObject(memdc, font_) : nullptr;
         SetBkMode(memdc, TRANSPARENT);
         SetTextColor(memdc, RGB(105, 118, 135));
         RECT tr = rc;
+        InflateRect(&tr, -S(16), -S(16));
         DrawTextW(memdc, L"请点击上方 选择照片 或将工作量照片直接拖入此处", -1, &tr,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        if (old_font) SelectObject(memdc, old_font);
     }
 
     BitBlt(hdc, 0, 0, cw, ch, memdc, 0, 0, SRCCOPY);
@@ -284,6 +331,7 @@ LRESULT PhotoCanvas::handle_msg(UINT msg, WPARAM wp, LPARAM lp) {
         zoom_ = next_zoom;
         pan_x_ = pt.x - img_x * zoom_;
         pan_y_ = pt.y - img_y * zoom_;
+        has_user_view_ = true;
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     }
@@ -294,10 +342,11 @@ LRESULT PhotoCanvas::handle_msg(UINT msg, WPARAM wp, LPARAM lp) {
         last_mouse_ = down_mouse_ = {x, y};
         moved_since_down_ = false;
         dragging_corner_ = -1;
+        int hit_rad = std::max(10, S(14));
         if (corner_edit_mode_ && img_w_ > 0) {
             for (int k = 0; k < 4; ++k) {
                 POINT sp = img_to_screen(corners_[k]);
-                if (std::abs(sp.x - x) <= 14 && std::abs(sp.y - y) <= 14) {
+                if (std::abs(sp.x - x) <= hit_rad && std::abs(sp.y - y) <= hit_rad) {
                     dragging_corner_ = k;
                     break;
                 }
@@ -309,6 +358,7 @@ LRESULT PhotoCanvas::handle_msg(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEMOVE: {
         int x = static_cast<short>(LOWORD(lp));
         int y = static_cast<short>(HIWORD(lp));
+        int drag_thresh = std::max(3, S(4));
         if (dragging_corner_ >= 0) {
             auto ip = screen_to_img(x, y);
             ip.x = std::max(0.0f, std::min(static_cast<float>(img_w_ - 1), ip.x));
@@ -319,12 +369,13 @@ LRESULT PhotoCanvas::handle_msg(UINT msg, WPARAM wp, LPARAM lp) {
         } else if (dragging_pan_) {
             int dx = x - last_mouse_.x;
             int dy = y - last_mouse_.y;
-            if (std::abs(x - down_mouse_.x) > 4 || std::abs(y - down_mouse_.y) > 4) {
+            if (std::abs(x - down_mouse_.x) > drag_thresh || std::abs(y - down_mouse_.y) > drag_thresh) {
                 moved_since_down_ = true;
             }
             pan_x_ += dx;
             pan_y_ += dy;
             last_mouse_ = {x, y};
+            has_user_view_ = true;
             InvalidateRect(hwnd_, nullptr, FALSE);
         }
         return 0;

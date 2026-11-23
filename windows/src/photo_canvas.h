@@ -32,10 +32,13 @@ public:
     HWND hwnd() const { return hwnd_; }
     void move(int x, int y, int w, int h);
     void show(bool visible);
+    void set_dpi(UINT dpi);
+    void set_font(HFONT font);
 
     void set_image(const nurseocr::ImageRgb& img);
     void set_overlays(std::vector<HighlightBox> boxes,
                       const std::array<nurseocr::Point2f, 4>& corners);
+    void focus_on_quad(const std::array<nurseocr::Point2f, 4>& quad);
     void select_highlight(int row, int col_index, bool center_view = true);
 
     void set_corner_edit_mode(bool enabled);
@@ -48,6 +51,7 @@ public:
     static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
 private:
+    int S(int px) const { return MulDiv(px, static_cast<int>(dpi_), 96); }
     LRESULT handle_msg(UINT msg, WPARAM wp, LPARAM lp);
     void paint(HDC hdc, const RECT& rc);
     void fit_to_view();
@@ -55,14 +59,18 @@ private:
     nurseocr::Point2f screen_to_img(int sx, int sy) const;
 
     HWND hwnd_ = nullptr;
+    UINT dpi_ = 96;
+    HFONT font_ = nullptr;
+
     int img_w_ = 0;
     int img_h_ = 0;
-    std::vector<uint8_t> dib_bgr_; // bottom-up or top-down BGR24 padded to 4-byte stride
+    std::vector<uint8_t> dib_bgr_; // top-down BGR24 padded to 4-byte stride
     int dib_stride_ = 0;
 
     double zoom_ = 1.0;
     double pan_x_ = 0.0;
     double pan_y_ = 0.0;
+    bool has_user_view_ = false;
 
     std::vector<HighlightBox> boxes_;
     std::array<nurseocr::Point2f, 4> corners_{};

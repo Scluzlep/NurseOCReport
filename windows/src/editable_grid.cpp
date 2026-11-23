@@ -48,10 +48,17 @@ void register_grid_class(HINSTANCE inst) {
 
 } // namespace
 
-EditableGrid::EditableGrid() = default;
+EditableGrid::EditableGrid() {
+    edit_bg_brush_ = CreateSolidBrush(RGB(255, 255, 255));
+}
+
 EditableGrid::~EditableGrid() {
-    if (edit_hwnd_) DestroyWindow(edit_hwnd_);
+    if (edit_hwnd_) {
+        RemoveWindowSubclass(edit_hwnd_, edit_sub_proc, 1);
+        DestroyWindow(edit_hwnd_);
+    }
     if (hwnd_) DestroyWindow(hwnd_);
+    if (edit_bg_brush_) DeleteObject(edit_bg_brush_);
 }
 
 bool EditableGrid::create(HWND parent, HINSTANCE inst, int id, int x, int y, int w, int h) {
@@ -68,6 +75,7 @@ bool EditableGrid::create(HWND parent, HINSTANCE inst, int id, int x, int y, int
         this);
     if (!hwnd_) return false;
     DragAcceptFiles(hwnd_, TRUE);
+    recompute_metrics();
     return true;
 }
 
@@ -75,6 +83,7 @@ void EditableGrid::move(int x, int y, int w, int h) {
     if (hwnd_) {
         MoveWindow(hwnd_, x, y, w, h, TRUE);
         update_scrollbars();
+        reposition_edit();
     }
 }
 
@@ -82,17 +91,41 @@ void EditableGrid::show(bool visible) {
     if (hwnd_) ShowWindow(hwnd_, visible ? SW_SHOW : SW_HIDE);
 }
 
+void EditableGrid::recompute_metrics() {
+    header_h_ = std::max(24, S(36));
+    row_h_ = std::max(22, S(32));
+    col_widths_.resize(cols_.size());
+    for (size_t i = 0; i < cols_.size(); ++i) {
+        col_widths_[i] = std::max(S(32), S(cols_[i].width));
+    }
+}
+
+void EditableGrid::set_dpi(UINT dpi) {
+    dpi_ = std::max(96u, dpi);
+    recompute_metrics();
+    update_scrollbars();
+    reposition_edit();
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void EditableGrid::set_font(HFONT font, HFONT bold_font) {
     font_ = font;
     bold_font_ = bold_font ? bold_font : font;
+    if (edit_hwnd_ && font_) {
+        SendMessageW(edit_hwnd_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+        reposition_edit();
+    }
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void EditableGrid::set_columns(const std::vector<GridColumn>& cols, bool freeze_first_col) {
     commit_edit(false);
+    if (cols_.size() != cols.size()) {
+        scroll_x_ = 0;
+    }
     cols_ = cols;
     freeze_first_col_ = freeze_first_col;
-    scroll_x_ = 0;
+    recompute_metrics();
     update_scrollbars();
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -140,7 +173,7 @@ void EditableGrid::select_cell(int row, int col, bool ensure_visible) {
 
 int EditableGrid::total_content_width() const {
     int sum = 0;
-    for (const auto& c : cols_) sum += c.width;
+    for (int w : col_widths_) sum += w;
     return sum;
 }
 
@@ -160,7 +193,7 @@ void EditableGrid::update_scrollbars() {
     svi.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
     svi.nMin = 0;
     svi.nMax = std::max(0, static_cast<int>(rows_.size()) - 1);
-    svi.nPage = visible_rows;
+    svi.nPage = static_cast<UINT>(visible_rows);
     svi.nPos = scroll_y_;
     SetScrollInfo(hwnd_, SB_VERT, &svi, TRUE);
 
@@ -173,7 +206,7 @@ void EditableGrid::update_scrollbars() {
     shi.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
     shi.nMin = 0;
     shi.nMax = std::max(0, tot_w - 1);
-    shi.nPage = std::max(1, cw);
+    shi.nPage = static_cast<UINT>(std::max(1, cw));
     shi.nPos = scroll_x_;
     SetScrollInfo(hwnd_, SB_HORZ, &shi, TRUE);
 }
@@ -192,12 +225,12 @@ void EditableGrid::ensure_cell_visible(int row, int col) {
         scroll_y_ = row - visible_rows + 1;
     }
 
-    int frozen_w = (freeze_first_col_ && !cols_.empty()) ? cols_[0].width : 0;
-    if (!(freeze_first_col_ && col == 0) && col >= 0 && col < static_cast<int>(cols_.size())) {
+    int frozen_w = (freeze_first_col_ && !col_widths_.empty()) ? col_widths_[0] : 0;
+    if (!(freeze_first_col_ && col == 0) && col >= 0 && col < static_cast<int>(col_widths_.size())) {
         int cx = 0;
-        for (int c = (freeze_first_col_ ? 1 : 0); c < col; ++c) cx += cols_[c].width;
-        int cell_w = cols_[col].width;
-        int view_w = std::max(20, cw - frozen_w);
+        for (int c = (freeze_first_col_ ? 1 : 0); c < col; ++c) cx += col_widths_[c];
+        int cell_w = col_widths_[col];
+        int view_w = std::max(S(20), cw - frozen_w);
         if (cx < scroll_x_) {
             scroll_x_ = cx;
         } else if (cx + cell_w > scroll_x_ + view_w) {
@@ -209,19 +242,19 @@ void EditableGrid::ensure_cell_visible(int row, int col) {
 
 RECT EditableGrid::cell_rect_in_client(int row, int col) const {
     RECT r{0, 0, 0, 0};
-    if (col < 0 || col >= static_cast<int>(cols_.size())) return r;
+    if (col < 0 || col >= static_cast<int>(col_widths_.size())) return r;
     int y = header_h_ + (row - scroll_y_) * row_h_;
     int x = 0;
     if (freeze_first_col_ && col == 0) {
         x = 0;
     } else {
         int start_c = freeze_first_col_ ? 1 : 0;
-        x = (freeze_first_col_ ? cols_[0].width : 0) - scroll_x_;
-        for (int c = start_c; c < col; ++c) x += cols_[c].width;
+        x = (freeze_first_col_ ? col_widths_[0] : 0) - scroll_x_;
+        for (int c = start_c; c < col; ++c) x += col_widths_[c];
     }
     r.left = x;
     r.top = y;
-    r.right = x + cols_[col].width;
+    r.right = x + col_widths_[col];
     r.bottom = y + row_h_;
     return r;
 }
@@ -231,22 +264,52 @@ bool EditableGrid::hit_test(int x, int y, int& out_row, int& out_col) const {
     int r = scroll_y_ + (y - header_h_) / row_h_;
     if (r < 0 || r >= static_cast<int>(rows_.size())) return false;
 
-    if (freeze_first_col_ && !cols_.empty() && x >= 0 && x < cols_[0].width) {
+    if (freeze_first_col_ && !col_widths_.empty() && x >= 0 && x < col_widths_[0]) {
         out_row = r;
         out_col = 0;
         return true;
     }
     int start_c = freeze_first_col_ ? 1 : 0;
-    int cur_x = (freeze_first_col_ && !cols_.empty() ? cols_[0].width : 0) - scroll_x_;
-    for (int c = start_c; c < static_cast<int>(cols_.size()); ++c) {
-        if (x >= cur_x && x < cur_x + cols_[c].width) {
+    int cur_x = (freeze_first_col_ && !col_widths_.empty() ? col_widths_[0] : 0) - scroll_x_;
+    for (int c = start_c; c < static_cast<int>(col_widths_.size()); ++c) {
+        if (x >= cur_x && x < cur_x + col_widths_[c]) {
             out_row = r;
             out_col = c;
             return true;
         }
-        cur_x += cols_[c].width;
+        cur_x += col_widths_[c];
     }
     return false;
+}
+
+void EditableGrid::reposition_edit() {
+    if (!edit_hwnd_ || edit_row_ < 0 || edit_col_ < 0) return;
+    RECT cr = cell_rect_in_client(edit_row_, edit_col_);
+    int cell_w = static_cast<int>(cr.right - cr.left);
+    int cell_h = static_cast<int>(cr.bottom - cr.top);
+
+    int text_h = S(17);
+    if (hwnd_ && font_) {
+        HDC hdc = GetDC(hwnd_);
+        if (hdc) {
+            HGDIOBJ old_f = SelectObject(hdc, font_);
+            TEXTMETRICW tm{};
+            if (GetTextMetricsW(hdc, &tm) && tm.tmHeight > 0) {
+                text_h = tm.tmHeight;
+            }
+            SelectObject(hdc, old_f);
+            ReleaseDC(hwnd_, hdc);
+        }
+    }
+
+    int pad_x = std::max(3, S(4));
+    int edit_h = std::min(std::max(S(16), cell_h - S(6)), text_h + S(4));
+    int edit_y = cr.top + std::max(S(2), (cell_h - edit_h) / 2);
+    int edit_x = cr.left + pad_x;
+    int edit_w = std::max(S(20), cell_w - pad_x * 2);
+
+    MoveWindow(edit_hwnd_, edit_x, edit_y, edit_w, edit_h, TRUE);
+    SendMessageW(edit_hwnd_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
 }
 
 void EditableGrid::begin_edit(int row, int col, const std::wstring* initial_replace) {
@@ -259,20 +322,28 @@ void EditableGrid::begin_edit(int row, int col, const std::wstring* initial_repl
     }
 
     commit_edit(false);
+    sel_row_ = row;
+    sel_col_ = col;
     ensure_cell_visible(row, col);
-    RECT cr = cell_rect_in_client(row, col);
 
     edit_row_ = row;
     edit_col_ = col;
     std::wstring init_txt = initial_replace ? *initial_replace : cell.text;
 
+    // Borderless single-line EDIT positioned with vertical padding so text never clips or squeezes.
+    DWORD align_style = cols_[col].center_align ? ES_CENTER : ES_LEFT;
     edit_hwnd_ = CreateWindowExW(
         0, L"EDIT", init_txt.c_str(),
-        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL | ES_CENTER,
-        cr.left + 1, cr.top + 1, std::max(24, static_cast<int>(cr.right - cr.left) - 2),
-        std::max(20, static_cast<int>(cr.bottom - cr.top) - 2),
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | align_style,
+        0, 0, S(40), S(20),
         hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!edit_hwnd_) {
+        edit_row_ = -1;
+        edit_col_ = -1;
+        return;
+    }
     if (font_) SendMessageW(edit_hwnd_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    reposition_edit();
     SetWindowSubclass(edit_hwnd_, edit_sub_proc, 1, reinterpret_cast<DWORD_PTR>(this));
     SetFocus(edit_hwnd_);
     if (initial_replace) {
@@ -280,6 +351,7 @@ void EditableGrid::begin_edit(int row, int col, const std::wstring* initial_repl
     } else {
         SendMessageW(edit_hwnd_, EM_SETSEL, 0, -1);
     }
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void EditableGrid::commit_edit(bool accept) {
@@ -291,15 +363,20 @@ void EditableGrid::commit_edit(bool accept) {
     edit_row_ = -1;
     edit_col_ = -1;
 
+    std::wstring edited_text;
+    bool fire_callback = false;
     if (accept && r >= 0 && r < static_cast<int>(rows_.size()) &&
         c >= 0 && c < static_cast<int>(rows_[r].size())) {
         int len = GetWindowTextLengthW(eh);
-        std::wstring buf(static_cast<size_t>(len + 1), L'\0');
-        GetWindowTextW(eh, &buf[0], len + 1);
-        buf.resize(static_cast<size_t>(len));
-        if (on_cell_edited) on_cell_edited(r, c, buf);
+        edited_text.assign(static_cast<size_t>(len + 1), L'\0');
+        GetWindowTextW(eh, &edited_text[0], len + 1);
+        edited_text.resize(static_cast<size_t>(len));
+        fire_callback = (on_cell_edited != nullptr);
     }
+
+    RemoveWindowSubclass(eh, edit_sub_proc, 1);
     DestroyWindow(eh);
+    if (fire_callback) on_cell_edited(r, c, edited_text);
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -332,6 +409,7 @@ LRESULT CALLBACK EditableGrid::edit_sub_proc(HWND hwnd, UINT msg, WPARAM wp, LPA
         }
     } else if (msg == WM_KILLFOCUS) {
         self->commit_edit(true);
+        return 0;
     }
     return DefSubclassProc(hwnd, msg, wp, lp);
 }
@@ -351,15 +429,16 @@ void EditableGrid::paint(HDC hdc, const RECT& rc) {
 
     SetBkMode(memdc, TRANSPARENT);
     HPEN grid_pen = CreatePen(PS_SOLID, 1, RGB(214, 220, 229));
-    HPEN sel_pen = CreatePen(PS_SOLID, 2, RGB(30, 90, 168));
+    HPEN sel_pen = CreatePen(PS_SOLID, std::max(2, S(2)), RGB(30, 90, 168));
     HGDIOBJ old_pen = SelectObject(memdc, grid_pen);
 
-    auto draw_cell_rect = [&](const RECT& cr, const std::wstring& txt, GridCellTone tone,
-                              bool is_checkbox, bool checked, bool selected, bool bold, bool center) {
-        RECT clipped = cr;
-        if (clipped.right <= 0 || clipped.left >= cw || clipped.bottom <= 0 || clipped.top >= ch) return;
+    auto draw_cell = [&](const RECT& cr, int row_idx, const std::wstring& txt, GridCellTone tone,
+                         bool is_checkbox, bool checked, bool selected, bool editing_here,
+                         bool bold, bool center) {
+        if (cr.right <= 0 || cr.left >= cw || cr.bottom <= 0 || cr.top >= ch) return;
 
-        HBRUSH br = CreateSolidBrush(tone_bg_color(tone, 0));
+        COLORREF bg_col = editing_here ? RGB(255, 255, 255) : tone_bg_color(tone, row_idx);
+        HBRUSH br = CreateSolidBrush(bg_col);
         FillRect(memdc, &cr, br);
         DeleteObject(br);
 
@@ -369,7 +448,7 @@ void EditableGrid::paint(HDC hdc, const RECT& rc) {
         LineTo(memdc, cr.right - 1, cr.top - 1);
 
         if (is_checkbox) {
-            int box = 18;
+            int box = std::max(14, S(18));
             int bx = (cr.left + cr.right - box) / 2;
             int by = (cr.top + cr.bottom - box) / 2;
             RECT br_rc{bx, by, bx + box, by + box};
@@ -381,29 +460,30 @@ void EditableGrid::paint(HDC hdc, const RECT& rc) {
             SelectObject(memdc, GetStockObject(NULL_BRUSH));
             Rectangle(memdc, br_rc.left, br_rc.top, br_rc.right, br_rc.bottom);
             if (checked) {
-                HPEN wpen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+                HPEN wpen = CreatePen(PS_SOLID, std::max(2, S(2)), RGB(255, 255, 255));
                 SelectObject(memdc, wpen);
-                MoveToEx(memdc, bx + 4, by + 9, nullptr);
-                LineTo(memdc, bx + 8, by + 13);
-                LineTo(memdc, bx + 14, by + 5);
+                MoveToEx(memdc, bx + MulDiv(box, 4, 18), by + MulDiv(box, 9, 18), nullptr);
+                LineTo(memdc, bx + MulDiv(box, 8, 18), by + MulDiv(box, 13, 18));
+                LineTo(memdc, bx + MulDiv(box, 14, 18), by + MulDiv(box, 5, 18));
                 SelectObject(memdc, grid_pen);
                 DeleteObject(wpen);
             } else {
                 SelectObject(memdc, grid_pen);
             }
             DeleteObject(bpen);
-        } else if (!txt.empty()) {
+        } else if (!editing_here && !txt.empty()) {
             HFONT use_font = bold ? bold_font_ : font_;
             if (use_font) SelectObject(memdc, use_font);
             SetTextColor(memdc, (tone == GridCellTone::Header) ? RGB(20, 42, 74) : RGB(24, 30, 38));
             RECT tr = cr;
-            tr.left += 5;
-            tr.right -= 5;
+            int pad_x = std::max(4, S(6));
+            tr.left += pad_x;
+            tr.right -= pad_x;
             UINT fmt = DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | (center ? DT_CENTER : DT_LEFT);
             DrawTextW(memdc, txt.c_str(), static_cast<int>(txt.size()), &tr, fmt);
         }
 
-        if (selected) {
+        if (selected || editing_here) {
             SelectObject(memdc, sel_pen);
             SelectObject(memdc, GetStockObject(NULL_BRUSH));
             Rectangle(memdc, cr.left + 1, cr.top + 1, cr.right - 1, cr.bottom - 1);
@@ -411,73 +491,44 @@ void EditableGrid::paint(HDC hdc, const RECT& rc) {
     };
 
     auto draw_col_range = [&](int c_start, int c_end, int x_start) {
-        // Data rows
         int visible_rows = (ch - header_h_) / row_h_ + 2;
         int r_end = std::min(static_cast<int>(rows_.size()), scroll_y_ + visible_rows);
         for (int r = scroll_y_; r < r_end; ++r) {
             int y = header_h_ + (r - scroll_y_) * row_h_;
             int x = x_start;
             for (int c = c_start; c < c_end; ++c) {
-                int w = cols_[c].width;
+                int w = col_widths_[c];
                 if (x + w > 0 && x < cw) {
                     RECT cr{x, y, x + w, y + row_h_};
                     const auto& cell = (c < static_cast<int>(rows_[r].size())) ? rows_[r][c] : GridCell{};
                     GridCellTone t = cell.tone;
-                    if (t == GridCellTone::Normal && c == name_drop_col_ && r < static_cast<int>(rows_.size()) - pinned_bottom_rows_) {
+                    if (t == GridCellTone::Normal && c == name_drop_col_ &&
+                        r < static_cast<int>(rows_.size()) - pinned_bottom_rows_) {
                         t = GridCellTone::DropTargetHint;
                     }
                     bool is_sel = (r == sel_row_ && c == sel_col_);
+                    bool is_edit = (edit_hwnd_ != nullptr && r == edit_row_ && c == edit_col_);
                     bool is_bold = (t == GridCellTone::TotalRow || (freeze_first_col_ && c == 0));
-                    HBRUSH row_bg = CreateSolidBrush(
-                        (t == GridCellTone::Normal) ? tone_bg_color(GridCellTone::Normal, r) : tone_bg_color(t, r));
-                    FillRect(memdc, &cr, row_bg);
-                    DeleteObject(row_bg);
-
-                    // Draw contents on top without refilling background
-                    SelectObject(memdc, grid_pen);
-                    MoveToEx(memdc, cr.left, cr.bottom - 1, nullptr);
-                    LineTo(memdc, cr.right - 1, cr.bottom - 1);
-                    LineTo(memdc, cr.right - 1, cr.top - 1);
-
-                    if (cell.kind == GridCellKind::Checkbox) {
-                        draw_cell_rect(cr, L"", t, true, cell.checked, is_sel, false, true);
-                    } else {
-                        if (!cell.text.empty()) {
-                            HFONT use_font = is_bold ? bold_font_ : font_;
-                            if (use_font) SelectObject(memdc, use_font);
-                            SetTextColor(memdc, RGB(24, 30, 38));
-                            RECT tr = cr;
-                            tr.left += 5;
-                            tr.right -= 5;
-                            UINT fmt = DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
-                                       (cols_[c].center_align ? DT_CENTER : DT_LEFT);
-                            DrawTextW(memdc, cell.text.c_str(), static_cast<int>(cell.text.size()), &tr, fmt);
-                        }
-                        if (is_sel) {
-                            SelectObject(memdc, sel_pen);
-                            SelectObject(memdc, GetStockObject(NULL_BRUSH));
-                            Rectangle(memdc, cr.left + 1, cr.top + 1, cr.right - 1, cr.bottom - 1);
-                        }
-                    }
+                    draw_cell(cr, r, cell.text, t, cell.kind == GridCellKind::Checkbox,
+                              cell.checked, is_sel, is_edit, is_bold, cols_[c].center_align);
                 }
                 x += w;
             }
         }
-        // Header row
         int x = x_start;
         for (int c = c_start; c < c_end; ++c) {
-            int w = cols_[c].width;
+            int w = col_widths_[c];
             if (x + w > 0 && x < cw) {
                 RECT cr{x, 0, x + w, header_h_};
-                draw_cell_rect(cr, cols_[c].title, GridCellTone::Header, false, false, false, true, true);
+                draw_cell(cr, 0, cols_[c].title, GridCellTone::Header, false, false, false, false, true, true);
             }
             x += w;
         }
     };
 
-    if (!cols_.empty()) {
+    if (!cols_.empty() && col_widths_.size() == cols_.size()) {
         int start_c = freeze_first_col_ ? 1 : 0;
-        int start_x = (freeze_first_col_ ? cols_[0].width : 0) - scroll_x_;
+        int start_x = (freeze_first_col_ ? col_widths_[0] : 0) - scroll_x_;
         if (start_c < static_cast<int>(cols_.size())) {
             draw_col_range(start_c, static_cast<int>(cols_.size()), start_x);
         }
@@ -523,13 +574,22 @@ LRESULT EditableGrid::handle_msg(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_ERASEBKGND:
         return 1;
+    case WM_CTLCOLOREDIT: {
+        HDC hdc = reinterpret_cast<HDC>(wp);
+        SetBkColor(hdc, RGB(255, 255, 255));
+        SetTextColor(hdc, RGB(24, 30, 38));
+        return reinterpret_cast<LRESULT>(edit_bg_brush_);
+    }
     case WM_SIZE:
         update_scrollbars();
+        reposition_edit();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     case WM_VSCROLL: {
         commit_edit(true);
-        SCROLLINFO si{sizeof(si), SIF_ALL};
+        SCROLLINFO si{};
+        si.cbSize = sizeof(si);
+        si.fMask = SIF_ALL;
         GetScrollInfo(hwnd_, SB_VERT, &si);
         int pos = si.nPos;
         switch (LOWORD(wp)) {
@@ -546,14 +606,17 @@ LRESULT EditableGrid::handle_msg(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_HSCROLL: {
         commit_edit(true);
-        SCROLLINFO si{sizeof(si), SIF_ALL};
+        SCROLLINFO si{};
+        si.cbSize = sizeof(si);
+        si.fMask = SIF_ALL;
         GetScrollInfo(hwnd_, SB_HORZ, &si);
         int pos = si.nPos;
+        int step = std::max(24, S(40));
         switch (LOWORD(wp)) {
-        case SB_LINELEFT: pos -= 40; break;
-        case SB_LINERIGHT: pos += 40; break;
-        case SB_PAGELEFT: pos -= std::max(40, static_cast<int>(si.nPage)); break;
-        case SB_PAGERIGHT: pos += std::max(40, static_cast<int>(si.nPage)); break;
+        case SB_LINELEFT: pos -= step; break;
+        case SB_LINERIGHT: pos += step; break;
+        case SB_PAGELEFT: pos -= std::max(step, static_cast<int>(si.nPage)); break;
+        case SB_PAGERIGHT: pos += std::max(step, static_cast<int>(si.nPage)); break;
         case SB_THUMBTRACK: pos = si.nTrackPos; break;
         }
         scroll_x_ = std::max(0, pos);
@@ -562,9 +625,10 @@ LRESULT EditableGrid::handle_msg(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_MOUSEWHEEL: {
+        commit_edit(true);
         int delta = GET_WHEEL_DELTA_WPARAM(wp);
         if (GetKeyState(VK_SHIFT) & 0x8000) {
-            scroll_x_ = std::max(0, scroll_x_ - (delta / 120) * 60);
+            scroll_x_ = std::max(0, scroll_x_ - (delta / 120) * std::max(30, S(60)));
         } else {
             scroll_y_ = std::max(0, scroll_y_ - (delta / 120) * 3);
         }
@@ -589,6 +653,36 @@ LRESULT EditableGrid::handle_msg(UINT msg, WPARAM wp, LPARAM lp) {
             }
         }
         return 0;
+    }
+    case WM_RBUTTONDOWN: {
+        SetFocus(hwnd_);
+        commit_edit(true);
+        int x = static_cast<short>(LOWORD(lp));
+        int y = static_cast<short>(HIWORD(lp));
+        int r = -1, c = -1;
+        if (hit_test(x, y, r, c)) {
+            select_cell(r, c, false);
+        }
+        if (on_context_menu) {
+            POINT pt{x, y};
+            ClientToScreen(hwnd_, &pt);
+            on_context_menu(r, c, pt);
+        }
+        return 0;
+    }
+    case WM_CONTEXTMENU: {
+        if (lp == static_cast<LPARAM>(-1) && on_context_menu) {
+            POINT pt{S(20), S(20)};
+            if (sel_row_ >= 0 && sel_col_ >= 0) {
+                RECT cr = cell_rect_in_client(sel_row_, sel_col_);
+                pt.x = (cr.left + cr.right) / 2;
+                pt.y = (cr.top + cr.bottom) / 2;
+            }
+            ClientToScreen(hwnd_, &pt);
+            on_context_menu(sel_row_, sel_col_, pt);
+            return 0;
+        }
+        break;
     }
     case WM_LBUTTONDBLCLK: {
         int x = static_cast<short>(LOWORD(lp));
@@ -638,19 +732,18 @@ LRESULT EditableGrid::handle_msg(UINT msg, WPARAM wp, LPARAM lp) {
         POINT pt{};
         DragQueryPoint(drop, &pt);
         int hit_r = -1, hit_c = (name_drop_col_ >= 0 ? name_drop_col_ : 0);
-        if (!hit_test(pt.x, pt.y, hit_r, hit_c)) {
-            // Check horizontal column under cursor even if dropped in header/empty space
-            int start_x = (freeze_first_col_ && !cols_.empty()) ? cols_[0].width : 0;
-            if (freeze_first_col_ && !cols_.empty() && pt.x < cols_[0].width) {
+        if (!hit_test(pt.x, pt.y, hit_r, hit_c) && !col_widths_.empty()) {
+            int start_x = freeze_first_col_ ? col_widths_[0] : 0;
+            if (freeze_first_col_ && pt.x < col_widths_[0]) {
                 hit_c = 0;
             } else {
                 int cur = start_x - scroll_x_;
-                for (int c = (freeze_first_col_ ? 1 : 0); c < static_cast<int>(cols_.size()); ++c) {
-                    if (pt.x >= cur && pt.x < cur + cols_[c].width) {
+                for (int c = (freeze_first_col_ ? 1 : 0); c < static_cast<int>(col_widths_.size()); ++c) {
+                    if (pt.x >= cur && pt.x < cur + col_widths_[c]) {
                         hit_c = c;
                         break;
                     }
-                    cur += cols_[c].width;
+                    cur += col_widths_[c];
                 }
             }
         }

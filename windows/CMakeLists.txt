@@ -1,10 +1,42 @@
 cmake_minimum_required(VERSION 3.16)
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+set(NURSEOCR_PACKED_MODELS "${CMAKE_CURRENT_BINARY_DIR}/embedded_models.pack")
+set(NURSEOCR_MODEL_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/../models/PP_OCRv5_mobile_det.ncnn.param"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../models/PP_OCRv5_mobile_det.ncnn.bin"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../models/PP_OCRv5_mobile_rec.ncnn.param"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../models/PP_OCRv5_mobile_rec.ncnn.bin"
+)
+
+add_custom_command(
+    OUTPUT "${NURSEOCR_PACKED_MODELS}"
+    COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/pack_models_cpp.py"
+            --models-dir "${CMAKE_CURRENT_SOURCE_DIR}/../models"
+            --output "${NURSEOCR_PACKED_MODELS}"
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/pack_models_cpp.py"
+        ${NURSEOCR_MODEL_FILES}
+    COMMENT "Packing compressed OCR models into embedded_models.pack"
+    VERBATIM
+)
+
+set_source_files_properties(app.rc PROPERTIES
+    OBJECT_DEPENDS "${NURSEOCR_PACKED_MODELS}"
+)
+
 add_executable(NurseOCReport WIN32
     src/main_win.cpp
     src/editable_grid.cpp
     src/photo_canvas.cpp
     app.rc
+)
+
+target_include_directories(NurseOCReport PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../deps/miniz"
 )
 
 target_link_libraries(NurseOCReport PRIVATE
