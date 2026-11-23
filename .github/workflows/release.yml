@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.1.0)"
+        description: "Release tag (e.g. v0.2.0)"
         required: true
-        default: "v0.1.0"
+        default: "v0.2.0"
 
 permissions:
   contents: write
@@ -91,7 +91,7 @@ jobs:
           fi
           test -x "$SDKMANAGER"
           { yes || true; } | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
-          { yes || true; } | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
+          { yes || true; } | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platforms;android-36" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
 
       - name: Fetch C++ dependencies and stage Android OCR model assets
         run: python3 scripts/fetch_deps.py --copy-android-assets
@@ -202,39 +202,37 @@ jobs:
           python scripts/verify_win7_pe.py "$bdir/windows/NurseOCReport.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Stage portable bundle and package zip
+      - name: Stage standalone Win7+ EXE and run self-test
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $arch = "${{ matrix.arch }}"
           $tag = "${{ needs.prepare.outputs.tag }}"
-          $pkgName = "NurseOCReport-win7-$arch"
-          $stageRoot = "dist/$pkgName"
-          New-Item -ItemType Directory -Force -Path "$stageRoot/models" | Out-Null
-          Copy-Item "build-$arch/windows/NurseOCReport.exe" "$stageRoot/NurseOCReport.exe" -Force
-          Copy-Item "models/PP_OCRv5_mobile_det.ncnn.param" "$stageRoot/models/" -Force
-          Copy-Item "models/PP_OCRv5_mobile_det.ncnn.bin" "$stageRoot/models/" -Force
-          Copy-Item "models/PP_OCRv5_mobile_rec.ncnn.param" "$stageRoot/models/" -Force
-          Copy-Item "models/PP_OCRv5_mobile_rec.ncnn.bin" "$stageRoot/models/" -Force
-
-          $proc = Start-Process -FilePath ".\$stageRoot\NurseOCReport.exe" -ArgumentList "--self-test" -Wait -PassThru
-          if ($proc.ExitCode -ne 0) {
-            throw "NurseOCReport.exe --self-test failed with exit code $($proc.ExitCode)"
-          }
-
+          if (Test-Path "out") { Remove-Item -Recurse -Force "out" }
           New-Item -ItemType Directory -Force -Path "out" | Out-Null
-          $zipBase = "out/NurseOCReport-$tag-win7-$arch"
-          $zipPath = "$zipBase.zip"
-          python -c "import shutil; print(shutil.make_archive('$zipBase', 'zip', root_dir='dist', base_dir='$pkgName'))"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path $zipPath)) { throw "Missing zip $zipPath" }
-          Get-Item $zipPath | Select-Object FullName, Length
+          $exeName = "NurseOCReport-$tag-win7-$arch.exe"
+          $exePath = "out/$exeName"
+          Copy-Item "build-$arch/windows/NurseOCReport.exe" $exePath -Force
 
-      - name: Upload Windows portable archive artifact
+          $cacheRoot = Join-Path $env:LOCALAPPDATA "NurseOCReport\cache"
+          if (Test-Path $cacheRoot) { Remove-Item -Recurse -Force $cacheRoot }
+
+          $exeFull = (Resolve-Path $exePath).Path
+          $proc = Start-Process -FilePath $exeFull -ArgumentList "--self-test" -WorkingDirectory (Split-Path $exeFull) -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            throw "$exeName --self-test failed with exit code $($proc.ExitCode)"
+          }
+          $cachedFiles = Get-ChildItem -Path $cacheRoot -Recurse -File -ErrorAction SilentlyContinue
+          if ($cachedFiles.Count -lt 4) {
+            throw "Expected at least 4 cached OCR model files under $cacheRoot, found $($cachedFiles.Count)"
+          }
+          Get-Item $exePath | Select-Object FullName, Length
+
+      - name: Upload Windows standalone EXE artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-${{ matrix.arch }}
-          path: out/NurseOCReport-${{ needs.prepare.outputs.tag }}-win7-${{ matrix.arch }}.zip
+          path: out/NurseOCReport-${{ needs.prepare.outputs.tag }}-win7-${{ matrix.arch }}.exe
           retention-days: 1
           if-no-files-found: error
 
@@ -255,17 +253,29 @@ jobs:
           set -euo pipefail
           TAG="${{ needs.prepare.outputs.tag }}"
           mkdir -p release_assets
-          find release_staging -type f \( -name "*.apk" -o -name "*.zip" \) -exec cp -v {} release_assets/ \;
+          find release_staging -type f \( -name "*.apk" -o -name "*.exe" \) -exec cp -v {} release_assets/ \;
           test "$(find release_assets -maxdepth 1 -name '*.apk' | wc -l)" -eq 1
-          test "$(find release_assets -maxdepth 1 -name '*.zip' | wc -l)" -eq 2
+          test "$(find release_assets -maxdepth 1 -name '*.exe' | wc -l)" -eq 2
           (cd release_assets && sha256sum * > SHA256SUMS.txt)
           ls -la release_assets
 
+          RELEASE_NOTES=$(cat <<'EOF'
+Offline nurse workload OCR and weighted calculation tool for Windows 7 SP1+ (x64/x86) and Android 7.0+.
+
+Highlights in v0.2.0:
+- Standalone single-file Windows x64/x86 EXEs with embedded OCR models auto-cached to %LOCALAPPDATA%\NurseOCReport\cache\ and Per-Monitor v2 High-DPI support.
+- Android UI migrated from Material3 to Miuix with non-squeezed cards, auto-zoom review preview, and dual-mode name import (direct delimited text or document file).
+- Upgraded 0-9 and .5 decimal OCR via MNIST-12 + PP-OCRv5 fusion, header-row guard, and automatic year/month detection.
+- Row delete/add controls on Windows and Android, auto-advance quick-fill review, and 0.00 Excel formatting.
+EOF
+)
+
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" release_assets/* --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "NurseOCReport $TAG" --notes "$RELEASE_NOTES"
           else
             gh release create "$TAG" release_assets/* \
               --repo "$GITHUB_REPOSITORY" \
               --title "NurseOCReport $TAG" \
-              --notes "Offline nurse workload OCR and weighted calculation tool for Windows 7 SP1+ x64/x86 and Android 7.0+."
+              --notes "$RELEASE_NOTES"
           fi
