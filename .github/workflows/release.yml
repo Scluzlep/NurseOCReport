@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.2.1)"
+        description: "Release tag (e.g. v0.2.2)"
         required: true
-        default: "v0.2.1"
+        default: "v0.2.2"
 
 permissions:
   contents: write
@@ -262,11 +262,11 @@ jobs:
           printf '%s\n' \
             'Offline nurse workload OCR and weighted calculation tool for Windows 7 SP1+ (x64/x86) and Android 7.0+.' \
             '' \
-            'Fixes and improvements in v0.2.1:' \
-            '- Fixed Android crash when opening dialogs (name import, add/edit staff, add/delete row, edit shift weight, year/month settings) by upgrading activity-compose to 1.12.4 for Miuix NavigationBackHandler compatibility and hoisting WorkloadTab SuperDialogs.' \
-            '- Unified button sizes across all Android tabs, quick-fill review grid, and dialogs, and enabled workload name import before loading a photo.' \
-            '- Preserved cross-border descending digit stems in table cell extraction and hardened PP-OCRv5 + MNIST-12 topology/disagreement review gating so open-top handwritten 4s crossing bottom grid lines are recognized as 4 or flagged for review instead of silently misread as 6.' \
-            '- Added multi-size Windows EXE application and window icon matching the Android launcher icon.' \
+            'Fixes and improvements in v0.2.2:' \
+            '- Normalized rectified table resolution to 1720px across desktop, compressed chat photos, and 12MP+ phone camera photos, with box-area pre-filtering before perspective warping to prevent bilinear aliasing.' \
+            '- Scaled grid strip tracking windows proportionally and hardened cell border cleanup so slanted grid lines in empty cells are removed while real interior handwritten 1s and faint strokes are preserved or flagged for review.' \
+            '- Tightened PP-OCRv5 + MNIST-12 low-confidence and disagreement gating so any cross-model conflict, CJK/letter-ambiguous token, or weak margin is flagged as NeedsReview instead of silently auto-confirmed.' \
+            '- Highlighted rows with pending digit reviews in the Android summary table with direct tap-to-review navigation, added a clickable low-confidence warning banner, and added pre-export unreviewed confirmation prompts on Android and Windows.' \
             > release_notes.txt
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
