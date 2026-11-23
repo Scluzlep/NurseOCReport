@@ -259,23 +259,22 @@ jobs:
           (cd release_assets && sha256sum * > SHA256SUMS.txt)
           ls -la release_assets
 
-          RELEASE_NOTES=$(cat <<'EOF'
-Offline nurse workload OCR and weighted calculation tool for Windows 7 SP1+ (x64/x86) and Android 7.0+.
-
-Highlights in v0.2.0:
-- Standalone single-file Windows x64/x86 EXEs with embedded OCR models auto-cached to %LOCALAPPDATA%\NurseOCReport\cache\ and Per-Monitor v2 High-DPI support.
-- Android UI migrated from Material3 to Miuix with non-squeezed cards, auto-zoom review preview, and dual-mode name import (direct delimited text or document file).
-- Upgraded 0-9 and .5 decimal OCR via MNIST-12 + PP-OCRv5 fusion, header-row guard, and automatic year/month detection.
-- Row delete/add controls on Windows and Android, auto-advance quick-fill review, and 0.00 Excel formatting.
-EOF
-)
+          printf '%s\n' \
+            'Offline nurse workload OCR and weighted calculation tool for Windows 7 SP1+ (x64/x86) and Android 7.0+.' \
+            '' \
+            'Highlights in v0.2.0:' \
+            '- Standalone single-file Windows x64/x86 EXEs with embedded OCR models auto-cached to %LOCALAPPDATA%\NurseOCReport\cache\ and Per-Monitor v2 High-DPI support.' \
+            '- Android UI migrated from Material3 to Miuix with non-squeezed cards, auto-zoom review preview, and dual-mode name import (direct delimited text or document file).' \
+            '- Upgraded 0-9 and .5 decimal OCR via MNIST-12 + PP-OCRv5 fusion, header-row guard, and automatic year/month detection.' \
+            '- Row delete/add controls on Windows and Android, auto-advance quick-fill review, and 0.00 Excel formatting.' \
+            > release_notes.txt
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" release_assets/* --clobber --repo "$GITHUB_REPOSITORY"
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "NurseOCReport $TAG" --notes "$RELEASE_NOTES"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "NurseOCReport $TAG" --notes-file release_notes.txt
           else
             gh release create "$TAG" release_assets/* \
               --repo "$GITHUB_REPOSITORY" \
               --title "NurseOCReport $TAG" \
-              --notes "$RELEASE_NOTES"
+              --notes-file release_notes.txt
           fi
