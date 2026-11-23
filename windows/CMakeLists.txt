@@ -24,7 +24,7 @@ add_custom_command(
 )
 
 set_source_files_properties(app.rc PROPERTIES
-    OBJECT_DEPENDS "${NURSEOCR_PACKED_MODELS}"
+    OBJECT_DEPENDS "${NURSEOCR_PACKED_MODELS};${CMAKE_CURRENT_SOURCE_DIR}/app.ico;${CMAKE_CURRENT_SOURCE_DIR}/app.manifest"
 )
 
 add_executable(NurseOCReport WIN32
@@ -35,6 +35,7 @@ add_executable(NurseOCReport WIN32
 )
 
 target_include_directories(NurseOCReport PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_BINARY_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/../deps/miniz"
 )

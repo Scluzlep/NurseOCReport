@@ -642,6 +642,9 @@ bool show_name_import_dialog(HWND parent,
         wc.lpfnWndProc = name_import_dlg_proc;
         wc.hInstance = inst;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIconSm = static_cast<HICON>(LoadImageW(
+            inst, MAKEINTRESOURCEW(100), IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
         wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
         wc.lpszClassName = L"NurseNameImportDlgClass";
         RegisterClassExW(&wc);
@@ -2138,12 +2141,20 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR cmd_line, int nCmdShow) {
     app.inst = hInst;
     app.init_state();
 
+    HICON hIconBig = static_cast<HICON>(LoadImageW(
+        hInst, MAKEINTRESOURCEW(100), IMAGE_ICON,
+        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR));
+    HICON hIconSmall = static_cast<HICON>(LoadImageW(
+        hInst, MAKEINTRESOURCEW(100), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = main_wnd_proc;
     wc.hInstance = hInst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIcon = hIconBig ? hIconBig : LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIconSm = hIconSmall ? hIconSmall : wc.hIcon;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     wc.lpszClassName = L"NurseOCReportMainWindow";
     RegisterClassExW(&wc);
